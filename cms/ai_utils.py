@@ -2,10 +2,14 @@ import os
 import json
 from google import genai
 from django.conf import settings
+from dotenv import load_dotenv
+
+# Ensure environment variables are loaded
+load_dotenv()
 
 def _get_client():
     """Returns a configured genai Client."""
-    api_key = os.getenv('GEMINI_API_KEY')
+    api_key = getattr(settings, 'GEMINI_API_KEY', None) or os.getenv('GEMINI_API_KEY')
     if not api_key:
         return None
     return genai.Client(api_key=api_key)
@@ -14,7 +18,7 @@ def _get_model_name():
     """
     Pick a Gemini model name with fallback options.
     """
-    primary = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+    primary = getattr(settings, 'GEMINI_MODEL', None) or os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
     fallback_env = os.getenv("GEMINI_MODEL_FALLBACKS", "gemini-2.0-flash,gemini-flash-latest,gemini-1.5-flash")
     candidates = [m.strip() for m in ([primary] + fallback_env.split(",")) if m.strip()]
     
