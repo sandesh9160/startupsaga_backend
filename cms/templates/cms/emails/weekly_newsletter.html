@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ header_title }} - {{ body_intro }}</title>
+    <style>
+        body {
+            font-family: {
+                    {
+                    font_family|safe
+                }
+            }
+
+            ;
+            margin: 0;
+            padding: 0;
+            background-color: #f1f1f1;
+            color: #0c0c0c;
+        }
+
+        .container {
+            max-width: 600px;
+            margin: 20px auto;
+            background: #ffffff;
+            border-radius: 24px;
+            overflow: hidden;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.05);
+            border: 1px solid #eeeeee;
+        }
+
+        .header {
+            padding: 40px 20px;
+            text-align: center;
+
+            border-top: 6px solid {
+                    {
+                    accent_color
+                }
+            }
+
+            ;
+            background-color: #ffffff;
+        }
+
+        .header h1 {
+            margin: 0;
+            font-size: 28px;
+            letter-spacing: -1px;
+            font-weight: 900;
+            color: #000000;
+        }
+
+        .header p {
+            margin: 8px 0 0;
+            color: #666666;
+            font-size: 15px;
+            font-weight: 500;
+        }
+
+        .content {
+            padding: 20px 30px 40px;
+        }
+
+        .section-title {
+            font-size: 11px;
+            font-weight: 900;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: #999999;
+            margin-bottom: 25px;
+            text-align: center;
+        }
+
+        .story-card {
+            margin-bottom: 20px;
+            padding: 20px;
+            background-color: #f9f9f9;
+            border-radius: 20px;
+            border: 1px solid #f0f0f0;
+        }
+
+        .story-category {
+            font-size: 10px;
+            font-weight: 800;
+
+            color: {
+                    {
+                    accent_color
+                }
+            }
+
+            ;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            margin-bottom: 8px;
+        }
+
+        .story-title {
+            font-size: 20px;
+            font-weight: 800;
+            color: #000000;
+            margin: 0 0 10px;
+            text-decoration: none;
+            display: block;
+            line-height: 1.3;
+        }
+
+        .story-excerpt {
+            font-size: 14px;
+            line-height: 1.5;
+            color: #444444;
+            margin: 0 0 15px;
+            font-weight: 500;
+        }
+
+        .btn-link {
+            display: inline-block;
+
+            color: {
+                    {
+                    accent_color
+                }
+            }
+
+            ;
+            font-weight: 700;
+            font-size: 13px;
+            text-decoration: none;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .footer {
+            padding: 30px 20px;
+            text-align: center;
+            background-color: #fcfcfc;
+            border-top: 1px solid #f5f5f5;
+        }
+
+        .footer p {
+            font-size: 12px;
+            color: #888888;
+            margin: 5px 0;
+            line-height: 1.6;
+        }
+
+        .unsubscribe {
+            color: #bbbbbb;
+            text-decoration: none;
+            font-weight: 700;
+            text-transform: uppercase;
+            font-size: 10px;
+            letter-spacing: 1px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div class="header">
+            {% if logo_url %}
+            <img src="{{ logo_url }}" alt="{{ header_title }}" style="max-height: 40px; margin-bottom: 15px;">
+            {% endif %}
+            <h1>{{ header_title }}</h1>
+            <p>{{ header_subtitle }}</p>
+        </div>
+
+        <div class="content">
+            <h2 style="font-size: 16px; margin-bottom: 20px;">{{ body_intro }}</h2>
+
+            {% for story in stories %}
+            <div class="story-card">
+                <div class="story-category">{{ story.category.name|default:"Startup Story" }}</div>
+                <a href="{{ site_url }}/stories/{{ story.slug }}" class="story-title">{{ story.title }}</a>
+                <p class="story-excerpt">{{ story.excerpt|truncatewords:25 }}</p>
+                <a href="{{ site_url }}/stories/{{ story.slug }}" class="btn-link">Read full story →</a>
+            </div>
+            {% empty %}
+            <p style="text-align: center; color: #94a3b8; padding: 20px;">No new stories this week. Check back soon!</p>
+            {% endfor %}
+
+            <div style="text-align: center; margin-top: 30px;">
+                <a href="{{ site_url }}/stories"
+                    style="background-color: {{ accent_color }}; color: white; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: 700; font-size: 14px;">Explore
+                    More Stories</a>
+            </div>
+        </div>
+
+        <div class="footer">
+            <p style="white-space: pre-wrap;">{{ footer_text }}</p>
+            <p>
+                <a href="{{ unsubscribe_url }}" class="unsubscribe">Unsubscribe</a>
+            </p>
+        </div>
+    </div>
+</body>
+
+</html>

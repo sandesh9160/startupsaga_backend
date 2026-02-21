@@ -1,0 +1,7 @@
+django
+djangorestframework
+djangorestframework-simplejwt
+pillow
+python-dotenv
+google-genai
+django-cors-headers
