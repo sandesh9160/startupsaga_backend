@@ -82,7 +82,7 @@ class Startup(models.Model):
     name = models.CharField(max_length=200)
     slug = models.SlugField(unique=True, blank=True)
     logo = models.ImageField(upload_to='startups/logos/', blank=True, null=True)
-    tagline = models.CharField(max_length=300, blank=True)
+    tagline = models.TextField(blank=True)
     description = models.TextField()
     website_url = models.URLField(blank=True)
     founded_year = models.IntegerField(blank=True, null=True)

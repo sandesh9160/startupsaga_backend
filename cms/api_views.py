@@ -252,8 +252,8 @@ def startup_list(request):
                 'id': s.id,
                 'name': s.name,
                 'slug': s.slug,
-                'description': s.description,
-                'tagline': s.tagline or (s.description[:140] if s.description else ''),
+                'description': _strip_html(s.description),
+                'tagline': s.tagline or (_strip_html(s.description)[:140] if s.description else ''),
                 'logo': logo_url,
                 'category': s.category.name if s.category else None,
                 'categorySlug': s.category.slug if s.category else None,
@@ -289,8 +289,8 @@ def startup_list(request):
             'id': s.id,
             'name': s.name,
             'slug': s.slug,
-            'description': s.description,
-            'tagline': s.tagline or (s.description[:140] if s.description else ''),
+            'description': _strip_html(s.description),
+            'tagline': s.tagline or (_strip_html(s.description)[:140] if s.description else ''),
             'logo': logo_url,
             'category': s.category.name if s.category else None,
             'categorySlug': s.category.slug if s.category else None,
@@ -613,7 +613,7 @@ def category_detail(request, slug):
             'meta_keywords': getattr(c, 'meta_keywords', ''),
             'og_image': c.og_image.url if c.og_image else None,
             'stories': [_serialize_story(s) for s in stories],
-            'startups': [{'name': s.name, 'slug': s.slug, 'description': s.description[:150] if s.description else '', 'logo': s.logo.url if s.logo else None} for s in startups],
+            'startups': [{'name': s.name, 'slug': s.slug, 'description': _strip_html(s.description)[:150] if s.description else '', 'logo': s.logo.url if s.logo else None} for s in startups],
         })
     except Category.DoesNotExist:
         return JsonResponse({'error': 'Not found'}, status=404)
@@ -655,7 +655,7 @@ def city_detail(request, slug):
             'meta_keywords': getattr(c, 'meta_keywords', ''),
             'og_image': c.og_image.url if c.og_image else None,
             'stories': [_serialize_story(s) for s in stories],
-            'startups': [{'name': s.name, 'slug': s.slug, 'description': s.description[:150] if s.description else '', 'logo': s.logo.url if s.logo else None, 'logo_url': s.logo.url if s.logo else None, 'funding_stage': getattr(s, 'funding_stage', '') or '', 'city': c.name, 'citySlug': c.slug, 'category': s.category.name if s.category else None, 'categorySlug': s.category.slug if s.category else None, 'team_size': s.team_size, 'tagline': s.tagline or (s.description[:140] if s.description else '')} for s in startups],
+            'startups': [{'name': s.name, 'slug': s.slug, 'description': _strip_html(s.description)[:150] if s.description else '', 'logo': s.logo.url if s.logo else None, 'logo_url': s.logo.url if s.logo else None, 'funding_stage': getattr(s, 'funding_stage', '') or '', 'city': c.name, 'citySlug': c.slug, 'category': s.category.name if s.category else None, 'categorySlug': s.category.slug if s.category else None, 'team_size': s.team_size, 'tagline': s.tagline or (_strip_html(s.description)[:140] if s.description else '')} for s in startups],
         })
     except City.DoesNotExist:
         return JsonResponse({'error': 'Not found'}, status=404)
