@@ -70,7 +70,7 @@ def _create_redirect_if_slug_changed(old_slug, new_slug, path_prefix):
         Redirect.objects.get_or_create(from_path=from_path, defaults={'to_path': to_path, 'is_permanent': True})
 
 def _serialize_story(s: Story):
-    excerpt = (s.excerpt or (_strip_html(s.content)[:200] if s.content else "")) if hasattr(s, 'excerpt') else (_strip_html(s.content)[:200] if s.content else "")
+    excerpt = getattr(s, 'excerpt', "")
     return {
         'id': s.id,
         'title': s.title,
