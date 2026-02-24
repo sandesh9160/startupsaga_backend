@@ -14,7 +14,7 @@ from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
-
+ 
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
@@ -30,7 +30,7 @@ ALLOWED_HOSTS = ['*']
 CSRF_TRUSTED_ORIGINS = ['http://localhost:3000', 'http://127.0.0.1:3000']
 
 
-
+ 
 # Application definition
 
 INSTALLED_APPS = [
@@ -184,6 +184,8 @@ SIMPLE_JWT = {
 
 # Email Configuration (spec: Weekly Newsletter)
 import os
+from dotenv import load_dotenv
+load_dotenv()
 EMAIL_BACKEND = os.getenv('EMAIL_BACKEND', 'django.core.mail.backends.smtp.EmailBackend')
 EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.gmail.com')
 EMAIL_PORT = int(os.getenv('EMAIL_PORT', 587))
@@ -196,3 +198,8 @@ SITE_URL = os.getenv('SITE_URL', 'http://localhost:3000')
 # In development, use console backend if no SMTP user is provided
 if DEBUG and not EMAIL_HOST_USER:
     EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+
+# Admin notification email
+ADMIN_EMAIL = os.getenv('ADMIN_EMAIL', 'admin@startupsaga.in')
+
+print("ADMIN_EMAIL:", os.getenv("ADMIN_EMAIL", default="NOT FOUND"))

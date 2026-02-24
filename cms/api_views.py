@@ -309,6 +309,7 @@ def startup_list(request):
         })
     return JsonResponse(data, safe=False)
 
+
 @require_GET
 def story_detail(request, slug):
     try:
@@ -1011,6 +1012,8 @@ def page_list(request):
         {'slug': 'home', 'title': 'Homepage'},
         {'slug': 'stories', 'title': 'Stories Listing'},
         {'slug': 'startups', 'title': 'Startups Listing'},
+        {'slug': 'categories', 'title': 'Categories Listing'},
+        {'slug': 'cities', 'title': 'Cities Listing'},
     ]
     
     for sp in system_pages_def:
@@ -1028,7 +1031,7 @@ def page_list(request):
     
     # Add is_system flag for frontend UI
     for p in pages:
-        if p['slug'] in ['home', 'stories', 'startups']:
+        if p['slug'] in ['home', 'stories', 'startups', 'categories', 'cities']:
             p['is_system'] = True
             
     return JsonResponse(pages, safe=False)
@@ -1037,11 +1040,17 @@ def page_list(request):
 @require_GET
 def sections_list(request):
     """List sections for a specific page key or slug"""
-    page_key = request.GET.get('page', 'homepage')
-    page_slug = request.GET.get('page_slug')
+    # By default, only show active sections for frontend.
+    # Add ?all=true to see both active/inactive (e.g. for the admin editor)
+    show_all = request.GET.get('all', 'false').lower() == 'true'
     
-    # Filter active only for frontend by default
-    qs = PageSection.objects.filter(is_active=True).order_by('order')
+    page_slug = request.GET.get('page_slug')
+    page_key = request.GET.get('page') or request.GET.get('page_key')
+    
+    qs = PageSection.objects.all().order_by('order')
+    
+    if not show_all:
+        qs = qs.filter(is_active=True)
     
     if page_slug:
         try:
@@ -1049,10 +1058,13 @@ def sections_list(request):
             # page_detail already enforces published-only for public page access.
             # Filtering by status here would silently return 0 sections for valid published pages.
             page_obj = Page.objects.get(slug=page_slug)
-            qs = qs.filter(page_obj=page_obj, page='custom')
+            qs = qs.filter(page_obj=page_obj, page__in=['custom', 'homepage', 'stories', 'startups', 'categories', 'cities'])
         except Page.DoesNotExist:
             qs = qs.none()
     elif page_key:
+        # Map 'home' to 'homepage' for consistency
+        if page_key == 'home':
+            page_key = 'homepage'
         qs = qs.filter(page=page_key)
         
     data = []
@@ -1523,7 +1535,6 @@ def submission_list(request):
 
         # Try to find associated startup
         startup = Startup.objects.filter(name__iexact=s.startup_name).first()
-
         data.append({
             'id': s.id,
             'startup_name': s.startup_name,
@@ -2036,49 +2047,57 @@ def page_delete(request, pk):
     return JsonResponse({'error': 'Method not allowed'}, status=405)
 
 
+from django.http import JsonResponse
+from django.views.decorators.http import require_GET
+from django.db.models import Q
+
 @require_GET
 def page_detail_admin(request, pk):
     try:
         # Fetch by ID, no status filter
         p = Page.objects.get(pk=pk)
-        
-        # Also fetch sections if they exist in PageSection table
-        # This ensures legacy data or data from the public view is visible in the editor
+
         theme_overrides = p.theme_overrides or {}
-        
+
         if 'sections' not in theme_overrides:
-            from django.db.models import Q
-            # Fetch sections: either linked to this page object, or matching system page slugs
+            slug_lower = p.slug.lower() if p.slug else ""
+
+            # Build query for sections
             query = Q(page_obj=p)
-            slug_lower = p.slug.lower() if p.slug else ''
-            
-            if slug_lower == 'home':
+
+            if slug_lower in ['home', 'homepage']:
                 query |= Q(page='homepage')
-            elif slug_lower in ['stories', 'startups', 'story_detail', 'startup_detail']:
+            elif slug_lower in ['stories', 'startups', 'categories', 'cities', 'story_detail', 'startup_detail']:
                 query |= Q(page=slug_lower)
-            
-            sections = PageSection.objects.filter(query).distinct().order_by('order')
-            
-            if sections.exists():
-                theme_overrides['sections'] = []
-                for s in sections:
-                    theme_overrides['sections'].append({
-                        'id': f"{s.section_type}-{s.id}", # Consistent with frontend fetch logic
-                        'db_id': s.id, # Ensure db_id is passed so frontend recognizes it as existing
-                        'type': s.section_type,
-                        'settings': {
-                            'title': s.title,
-                            'subtitle': s.subtitle,
-                            'description': s.description,
-                            'body': s.content, # map content to body for the editor
-                            'linkText': s.link_text,
-                            'linkUrl': s.link_url,
-                            'imageUrl': s.image.url if s.image else None,
-                            'iconUrl': s.icon.url if s.icon else None,
-                            **(s.settings or {})
-                        }
-                    })
-        
+
+            # Fetch sections (including inactive ones for admin)
+            sections = (
+                PageSection.objects
+                .filter(query)
+                .distinct()
+                .order_by('order')
+            )
+
+            section_data = []
+            for s in sections:
+                section_data.append({
+                    'id': f"{s.section_type}-{s.id}",
+                    'type': s.section_type,
+                    'db_id': s.id,
+                    'is_active': s.is_active,
+                    'settings': {
+                        'title': s.title,
+                        'subtitle': s.subtitle,
+                        'body': s.description or s.content,
+                        'imageUrl': s.image.url if s.image else None,
+                        'buttonText': s.link_text,
+                        'buttonLink': s.link_url,
+                        **(s.settings or {})
+                    }
+                })
+
+            theme_overrides['sections'] = section_data
+
         return JsonResponse({
             'id': p.id,
             'title': p.title,
@@ -2090,8 +2109,14 @@ def page_detail_admin(request, pk):
             'theme_overrides': theme_overrides,
             'updated_at': p.updated_at.isoformat() if p.updated_at else None
         })
+
     except Page.DoesNotExist:
-        return JsonResponse({'error': 'Not found'}, status=404)
+        return JsonResponse({'error': 'Page not found'}, status=404)
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JsonResponse({'error': str(e)}, status=400)
 
 
 # --- MENU APIs ---
@@ -2746,6 +2771,9 @@ def session_logout_view(request):
 def newsletter_subscribe(request):
     try:
         from .models import NewsletterSubscription
+        from django.core.mail import send_mail
+        from django.conf import settings
+        
         data = json.loads(request.body)
         email = data.get('email', '').strip().lower()
         if not email:
@@ -2753,10 +2781,32 @@ def newsletter_subscribe(request):
         
         # Check if already exists
         sub, created = NewsletterSubscription.objects.get_or_create(email=email)
+        status = 're-activated' if not created else 'new'
+        
         if not created and not sub.is_active:
             sub.is_active = True
             sub.save()
-        
+            
+        # Send email to admin
+        try:
+            admin_email = getattr(settings, 'ADMIN_EMAIL', getattr(settings, 'DEFAULT_FROM_EMAIL', 'admin@startupsaga.in'))
+
+            print("admin_email", admin_email)
+
+            subject = f'New Newsletter Subscription - {email}'
+            message = f'A {"new" if created else "reactivated"} user has subscribed to the newsletter.\n\nEmail: {email}\nStatus: {status}\nTime: {sub.created_at.strftime("%Y-%m-%d %H:%M:%S") if hasattr(sub, "created_at") else "Just now"}'
+             
+            send_mail(
+                subject=subject,
+                message=message,
+                from_email=getattr(settings, 'DEFAULT_FROM_EMAIL', 'no-reply@startupsaga.in'),
+                
+                recipient_list=[admin_email],
+                fail_silently=True,  # Don't throw error if email fails, UI should still succeed
+            )
+        except Exception as e:
+            print(f"Failed to send admin notification email: {str(e)}")
+            
         return JsonResponse({'message': 'Success', 'created': created}, status=201)
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=400)
