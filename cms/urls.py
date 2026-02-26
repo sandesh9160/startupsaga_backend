@@ -29,11 +29,13 @@ from .activity_stats import activity_stats, platform_stats
 urlpatterns = [
     # Platform Analytics
     path('platform-stats/', platform_stats, name='platform_stats'),
+    
     # AI (spec: /api/ai/*)
     path('ai/generate-seo/', generate_seo_view, name='ai_generate_seo'),
     path('ai/generate-content/', generate_content_view, name='ai_generate_content'),
     path('ai/prompts/', prompt_list, name='ai_prompts'),
     path('ai/prompts/<int:pk>/', prompt_detail, name='ai_prompt_detail'),
+    
     # Legacy AI paths (backward compat)
     path('generate-seo/', generate_seo_view, name='generate_seo'),
     path('generate-content/', generate_content_view, name='generate_content'),

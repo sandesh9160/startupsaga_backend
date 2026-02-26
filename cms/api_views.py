@@ -109,6 +109,7 @@ def _serialize_story(s: Story):
         'meta_description': s.meta_description,
         'meta_keywords': s.meta_keywords,
         'image_alt': s.image_alt,
+        'og_image': s.og_image.url if s.og_image else None,
         'show_table_of_contents': s.show_table_of_contents,
         'status': s.status,
     }
@@ -373,6 +374,7 @@ def startup_create(request):
                     meta_title=data.get('meta_title', ''),
                     meta_description=data.get('meta_description', ''),
                     meta_keywords=data.get('meta_keywords', ''),
+                    image_alt=data.get('image_alt', ''),
                     is_featured=bool(data.get('is_featured', False))
                 )
 
@@ -437,7 +439,7 @@ def startup_update(request, slug):
                 'founder_name', 'founder_linkedin',
                 'funding_stage', 'business_model', 'team_size',
                 'founders_data', 'industry_tags',
-                'status', 'meta_title', 'meta_description',
+                'status', 'meta_title', 'meta_description', 'meta_keywords', 'image_alt',
                 'canonical_override', 'noindex',
             ]
             for key in list(data.keys()):
@@ -1791,6 +1793,14 @@ def story_create(request):
                     # don't fail story creation for thumbnail copy errors
                     pass
 
+            # Handle og_image (base64)
+            og_image_data = data.get('og_image', '')
+            if og_image_data and og_image_data.startswith('data:image'):
+                format, imgstr = og_image_data.split(';base64,')
+                ext = format.split('/')[-1]
+                story.og_image = ContentFile(base64.b64decode(imgstr), name=f'{story.slug}-og.{ext}')
+                story.save()
+
             return JsonResponse({
                 'id': story.id,
                 'slug': story.slug,
@@ -1915,6 +1925,14 @@ def story_update(request, story_id):
                     ext = format.split('/')[-1]
                     image_data = ContentFile(base64.b64decode(imgstr), name=f'{story.slug}.{ext}')
                     story.thumbnail = image_data
+
+            # Handle og_image update (base64 or keep existing)
+            og_image_data = data.get('og_image', '')
+            if og_image_data:
+                if og_image_data.startswith('data:image'):
+                    format, imgstr = og_image_data.split(';base64,')
+                    ext = format.split('/')[-1]
+                    story.og_image = ContentFile(base64.b64decode(imgstr), name=f'{story.slug}-og.{ext}')
 
             story.save()
             _create_redirect_if_slug_changed(old_story_slug, story.slug, 'stories')
@@ -2144,10 +2162,11 @@ def layout_settings_update(request):
             if request.content_type and 'multipart/form-data' in request.content_type:
                 data = request.POST.dict()
                 
-                # Handle Logo Upload
-                if 'site_logo' in request.FILES:
-                    logo = request.FILES['site_logo']
-                    path = default_storage.save(f"site/{logo.name}", logo)
+                # Handle File Uploads (site_logo, site_favicon, etc.)
+                for file_key in request.FILES:
+                    uploaded_file = request.FILES[file_key]
+                    path = default_storage.save(f"site/{uploaded_file.name}", uploaded_file)
+                    
                     # Construct URL
                     if hasattr(default_storage, 'url'):
                         url = default_storage.url(path)
@@ -2158,7 +2177,7 @@ def layout_settings_update(request):
                     if url and not url.startswith('http'):
                         url = request.build_absolute_uri(url)
                         
-                    data['site_logo'] = url
+                    data[file_key] = url
                 
                 # Handle Logo Removal
                 if data.get('remove_logo') == 'true':
@@ -2686,6 +2705,7 @@ def startup_detail(request, slug):
             'meta_title': s.meta_title or s.name,
             'meta_description': s.meta_description or (s.description[:160] if s.description else ''),
             'meta_keywords': getattr(s, 'meta_keywords', ''),
+            'image_alt': getattr(s, 'image_alt', ''),
             'og_image': get_image_url(request, s.og_image) or get_image_url(request, s.logo),
             'canonical_override': getattr(s, 'canonical_override', '') or '',
             'noindex': getattr(s, 'noindex', False),
@@ -2709,6 +2729,9 @@ def generate_seo_view(request):
             suggestions = CitySEOGenerator(data.get('title'), data.get('description', ''))
         else:
             suggestions = generate_seo_suggestions(data)
+        # If the AI util returned an error dict, send it as an HTTP error
+        if isinstance(suggestions, dict) and 'error' in suggestions:
+            return JsonResponse(suggestions, status=503)
         return JsonResponse(suggestions)
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)

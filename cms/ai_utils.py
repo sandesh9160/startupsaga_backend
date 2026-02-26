@@ -13,14 +13,17 @@ def _get_client():
 def _get_model_name():
     """
     Pick a Gemini model name with fallback options.
+    The google-genai SDK expects 'models/' prefix.
     """
     primary = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
-    fallback_env = os.getenv("GEMINI_MODEL_FALLBACKS", "gemini-2.0-flash,gemini-flash-latest,gemini-1.5-flash")
+    fallback_env = os.getenv("GEMINI_MODEL_FALLBACKS", "gemini-2.5-flash,gemini-2.5-pro")
     candidates = [m.strip() for m in ([primary] + fallback_env.split(",")) if m.strip()]
     
-    # We'll return the first candidate for now. The new SDK doesn't have 
-    # the same 'GenerativeModel' instantiation check as the old one.
-    return candidates[0] if candidates else "gemini-2.0-flash"
+    name = candidates[0] if candidates else "gemini-2.0-flash"
+    # The google-genai Client SDK requires 'models/' prefix
+    if not name.startswith("models/"):
+        name = f"models/{name}"
+    return name
 
 def generate_seo_suggestions(content_data):
     """
@@ -32,21 +35,31 @@ def generate_seo_suggestions(content_data):
 
     model_name = _get_model_name()
 
-    prompt = f"""
-    Act as an SEO Expert. Analyze the following content for a {content_data.get('type', 'page')} named "{content_data.get('title')}".
-    Description: {content_data.get('description')}
-    Content Snippet: {content_data.get('content', '')[:1000]}...
+    # Try to use saved prompt if available
+    from .models import AIPrompt
+    try:
+        saved_prompt = AIPrompt.objects.get(name="Global SEO Generator", is_active=True)
+        prompt = saved_prompt.prompt_text
+        prompt = prompt.replace("{type}", str(content_data.get('type', 'page')))
+        prompt = prompt.replace("{title}", str(content_data.get('title', '')))
+        prompt = prompt.replace("{description}", str(content_data.get('description', '')))
+        prompt = prompt.replace("{content}", str(content_data.get('content', '')[:1000]))
+    except AIPrompt.DoesNotExist:
+        prompt = f"""
+        Act as an SEO Expert. Analyze the following content for a {content_data.get('type', 'page')} named "{content_data.get('title')}".
+        Description: {content_data.get('description')}
+        Content Snippet: {content_data.get('content', '')[:1000]}...
 
-    Generate SEO Metadata in valid JSON format with these exact keys:
-    - meta_title (max 60 chars)
-    - meta_description (MUST BE EXACTLY 160 characters OR LESS. Do not exceed this limit.)
-    - keywords (comma separated)
-    - image_alt (max 100 chars, descriptive but concise alt text for the featured image)
-    - og_title
-    - og_description
-    
-    Do not include markdown formatting like ```json ... ```. Just return the raw JSON string.
-    """
+        Generate SEO Metadata in valid JSON format with these exact keys:
+        - meta_title (max 60 chars)
+        - meta_description (MUST BE EXACTLY 160 characters OR LESS. Do not exceed this limit.)
+        - keywords (comma separated)
+        - image_alt (max 100 chars, descriptive but concise alt text for the featured image)
+        - og_title
+        - og_description
+        
+        Do not include markdown formatting like ```json ... ```. Just return the raw JSON string.
+        """
     try:
         response = client.models.generate_content(model=model_name, contents=prompt)
         text = response.text

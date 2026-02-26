@@ -185,7 +185,7 @@ SIMPLE_JWT = {
 # Email Configuration (spec: Weekly Newsletter)
 import os
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(BASE_DIR / '.env', override=True)
 EMAIL_BACKEND = os.getenv('EMAIL_BACKEND', 'django.core.mail.backends.smtp.EmailBackend')
 EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.gmail.com')
 EMAIL_PORT = int(os.getenv('EMAIL_PORT', 587))
@@ -202,4 +202,4 @@ if DEBUG and not EMAIL_HOST_USER:
 # Admin notification email
 ADMIN_EMAIL = os.getenv('ADMIN_EMAIL', 'admin@startupsaga.in')
 
-print("ADMIN_EMAIL:", os.getenv("ADMIN_EMAIL", default="NOT FOUND"))
+# print("ADMIN_EMAIL:", os.getenv("ADMIN_EMAIL", default="NOT FOUND"))
