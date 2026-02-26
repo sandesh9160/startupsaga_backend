@@ -44,11 +44,5 @@ SYSTEM_PROMPTS = [
         "category": "desc_gen",
         "prompt_text": 'Write a professional alt text for a cover image representing the startup ecosystem of {name}. Focus on the city skyline or innovation vibe. Max 15 words.',
         "is_active": True
-    },
-    {
-        "name": "Global SEO Generator",
-        "category": "seo_gen",
-        "prompt_text": 'Act as an SEO Expert. Analyze the following content for a {type} named "{title}".\nDescription: {description}\nContent Snippet: {content}\n\nGenerate SEO Metadata in valid JSON format with these exact keys: meta_title, meta_description, keywords, image_alt, og_title, og_description.\n\nThe meta_description MUST BE EXACTLY 160 characters OR LESS. Do not include markdown formatting.',
-        "is_active": True
     }
 ]

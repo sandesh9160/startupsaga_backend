@@ -82,7 +82,7 @@ class Startup(models.Model):
     name = models.CharField(max_length=200)
     slug = models.SlugField(unique=True, blank=True)
     logo = models.ImageField(upload_to='startups/logos/', blank=True, null=True)
-    tagline = models.TextField(blank=True)
+    tagline = models.CharField(max_length=300, blank=True)
     description = models.TextField()
     website_url = models.URLField(blank=True)
     founded_year = models.IntegerField(blank=True, null=True)
@@ -104,7 +104,6 @@ class Startup(models.Model):
     meta_description = models.TextField(blank=True)
     meta_keywords = models.TextField(blank=True, help_text='Comma-separated SEO keywords')
     og_image = models.ImageField(upload_to='seo/og_images/', blank=True, null=True)
-    image_alt = models.CharField(max_length=300, blank=True, help_text='Alt text for logo/featured image')
     canonical_override = models.URLField(blank=True)
     noindex = models.BooleanField(default=False)
     
@@ -425,7 +424,6 @@ class LayoutSetting(models.Model):
 
     def __str__(self):
         return self.key
-
 
 
 import uuid

@@ -70,7 +70,7 @@ def _create_redirect_if_slug_changed(old_slug, new_slug, path_prefix):
         Redirect.objects.get_or_create(from_path=from_path, defaults={'to_path': to_path, 'is_permanent': True})
 
 def _serialize_story(s: Story):
-    excerpt = getattr(s, 'excerpt', "")
+    excerpt = (s.excerpt or (_strip_html(s.content)[:200] if s.content else "")) if hasattr(s, 'excerpt') else (_strip_html(s.content)[:200] if s.content else "")
     return {
         'id': s.id,
         'title': s.title,
@@ -109,7 +109,6 @@ def _serialize_story(s: Story):
         'meta_description': s.meta_description,
         'meta_keywords': s.meta_keywords,
         'image_alt': s.image_alt,
-        'og_image': s.og_image.url if s.og_image else None,
         'show_table_of_contents': s.show_table_of_contents,
         'status': s.status,
     }
@@ -253,8 +252,8 @@ def startup_list(request):
                 'id': s.id,
                 'name': s.name,
                 'slug': s.slug,
-                'description': _strip_html(s.description),
-                'tagline': s.tagline or (_strip_html(s.description)[:140] if s.description else ''),
+                'description': s.description,
+                'tagline': s.tagline or (s.description[:140] if s.description else ''),
                 'logo': logo_url,
                 'category': s.category.name if s.category else None,
                 'categorySlug': s.category.slug if s.category else None,
@@ -290,8 +289,8 @@ def startup_list(request):
             'id': s.id,
             'name': s.name,
             'slug': s.slug,
-            'description': _strip_html(s.description),
-            'tagline': s.tagline or (_strip_html(s.description)[:140] if s.description else ''),
+            'description': s.description,
+            'tagline': s.tagline or (s.description[:140] if s.description else ''),
             'logo': logo_url,
             'category': s.category.name if s.category else None,
             'categorySlug': s.category.slug if s.category else None,
@@ -309,7 +308,6 @@ def startup_list(request):
             'updated_at': s.updated_at.isoformat() if s.updated_at else None
         })
     return JsonResponse(data, safe=False)
-
 
 @require_GET
 def story_detail(request, slug):
@@ -374,7 +372,6 @@ def startup_create(request):
                     meta_title=data.get('meta_title', ''),
                     meta_description=data.get('meta_description', ''),
                     meta_keywords=data.get('meta_keywords', ''),
-                    image_alt=data.get('image_alt', ''),
                     is_featured=bool(data.get('is_featured', False))
                 )
 
@@ -439,7 +436,7 @@ def startup_update(request, slug):
                 'founder_name', 'founder_linkedin',
                 'funding_stage', 'business_model', 'team_size',
                 'founders_data', 'industry_tags',
-                'status', 'meta_title', 'meta_description', 'meta_keywords', 'image_alt',
+                'status', 'meta_title', 'meta_description',
                 'canonical_override', 'noindex',
             ]
             for key in list(data.keys()):
@@ -616,7 +613,7 @@ def category_detail(request, slug):
             'meta_keywords': getattr(c, 'meta_keywords', ''),
             'og_image': c.og_image.url if c.og_image else None,
             'stories': [_serialize_story(s) for s in stories],
-            'startups': [{'name': s.name, 'slug': s.slug, 'description': _strip_html(s.description)[:150] if s.description else '', 'logo': s.logo.url if s.logo else None} for s in startups],
+            'startups': [{'name': s.name, 'slug': s.slug, 'description': s.description[:150] if s.description else '', 'logo': s.logo.url if s.logo else None} for s in startups],
         })
     except Category.DoesNotExist:
         return JsonResponse({'error': 'Not found'}, status=404)
@@ -658,7 +655,7 @@ def city_detail(request, slug):
             'meta_keywords': getattr(c, 'meta_keywords', ''),
             'og_image': c.og_image.url if c.og_image else None,
             'stories': [_serialize_story(s) for s in stories],
-            'startups': [{'name': s.name, 'slug': s.slug, 'description': _strip_html(s.description)[:150] if s.description else '', 'logo': s.logo.url if s.logo else None, 'logo_url': s.logo.url if s.logo else None, 'funding_stage': getattr(s, 'funding_stage', '') or '', 'city': c.name, 'citySlug': c.slug, 'category': s.category.name if s.category else None, 'categorySlug': s.category.slug if s.category else None, 'team_size': s.team_size, 'tagline': s.tagline or (_strip_html(s.description)[:140] if s.description else '')} for s in startups],
+            'startups': [{'name': s.name, 'slug': s.slug, 'description': s.description[:150] if s.description else '', 'logo': s.logo.url if s.logo else None, 'logo_url': s.logo.url if s.logo else None, 'funding_stage': getattr(s, 'funding_stage', '') or '', 'city': c.name, 'citySlug': c.slug, 'category': s.category.name if s.category else None, 'categorySlug': s.category.slug if s.category else None, 'team_size': s.team_size, 'tagline': s.tagline or (s.description[:140] if s.description else '')} for s in startups],
         })
     except City.DoesNotExist:
         return JsonResponse({'error': 'Not found'}, status=404)
@@ -1014,8 +1011,6 @@ def page_list(request):
         {'slug': 'home', 'title': 'Homepage'},
         {'slug': 'stories', 'title': 'Stories Listing'},
         {'slug': 'startups', 'title': 'Startups Listing'},
-        {'slug': 'categories', 'title': 'Categories Listing'},
-        {'slug': 'cities', 'title': 'Cities Listing'},
     ]
     
     for sp in system_pages_def:
@@ -1033,7 +1028,7 @@ def page_list(request):
     
     # Add is_system flag for frontend UI
     for p in pages:
-        if p['slug'] in ['home', 'stories', 'startups', 'categories', 'cities']:
+        if p['slug'] in ['home', 'stories', 'startups']:
             p['is_system'] = True
             
     return JsonResponse(pages, safe=False)
@@ -1042,17 +1037,11 @@ def page_list(request):
 @require_GET
 def sections_list(request):
     """List sections for a specific page key or slug"""
-    # By default, only show active sections for frontend.
-    # Add ?all=true to see both active/inactive (e.g. for the admin editor)
-    show_all = request.GET.get('all', 'false').lower() == 'true'
-    
+    page_key = request.GET.get('page', 'homepage')
     page_slug = request.GET.get('page_slug')
-    page_key = request.GET.get('page') or request.GET.get('page_key')
     
-    qs = PageSection.objects.all().order_by('order')
-    
-    if not show_all:
-        qs = qs.filter(is_active=True)
+    # Filter active only for frontend by default
+    qs = PageSection.objects.filter(is_active=True).order_by('order')
     
     if page_slug:
         try:
@@ -1060,13 +1049,10 @@ def sections_list(request):
             # page_detail already enforces published-only for public page access.
             # Filtering by status here would silently return 0 sections for valid published pages.
             page_obj = Page.objects.get(slug=page_slug)
-            qs = qs.filter(page_obj=page_obj, page__in=['custom', 'homepage', 'stories', 'startups', 'categories', 'cities'])
+            qs = qs.filter(page_obj=page_obj, page='custom')
         except Page.DoesNotExist:
             qs = qs.none()
     elif page_key:
-        # Map 'home' to 'homepage' for consistency
-        if page_key == 'home':
-            page_key = 'homepage'
         qs = qs.filter(page=page_key)
         
     data = []
@@ -1537,6 +1523,7 @@ def submission_list(request):
 
         # Try to find associated startup
         startup = Startup.objects.filter(name__iexact=s.startup_name).first()
+
         data.append({
             'id': s.id,
             'startup_name': s.startup_name,
@@ -1793,14 +1780,6 @@ def story_create(request):
                     # don't fail story creation for thumbnail copy errors
                     pass
 
-            # Handle og_image (base64)
-            og_image_data = data.get('og_image', '')
-            if og_image_data and og_image_data.startswith('data:image'):
-                format, imgstr = og_image_data.split(';base64,')
-                ext = format.split('/')[-1]
-                story.og_image = ContentFile(base64.b64decode(imgstr), name=f'{story.slug}-og.{ext}')
-                story.save()
-
             return JsonResponse({
                 'id': story.id,
                 'slug': story.slug,
@@ -1925,14 +1904,6 @@ def story_update(request, story_id):
                     ext = format.split('/')[-1]
                     image_data = ContentFile(base64.b64decode(imgstr), name=f'{story.slug}.{ext}')
                     story.thumbnail = image_data
-
-            # Handle og_image update (base64 or keep existing)
-            og_image_data = data.get('og_image', '')
-            if og_image_data:
-                if og_image_data.startswith('data:image'):
-                    format, imgstr = og_image_data.split(';base64,')
-                    ext = format.split('/')[-1]
-                    story.og_image = ContentFile(base64.b64decode(imgstr), name=f'{story.slug}-og.{ext}')
 
             story.save()
             _create_redirect_if_slug_changed(old_story_slug, story.slug, 'stories')
@@ -2065,57 +2036,49 @@ def page_delete(request, pk):
     return JsonResponse({'error': 'Method not allowed'}, status=405)
 
 
-from django.http import JsonResponse
-from django.views.decorators.http import require_GET
-from django.db.models import Q
-
 @require_GET
 def page_detail_admin(request, pk):
     try:
         # Fetch by ID, no status filter
         p = Page.objects.get(pk=pk)
-
+        
+        # Also fetch sections if they exist in PageSection table
+        # This ensures legacy data or data from the public view is visible in the editor
         theme_overrides = p.theme_overrides or {}
-
+        
         if 'sections' not in theme_overrides:
-            slug_lower = p.slug.lower() if p.slug else ""
-
-            # Build query for sections
+            from django.db.models import Q
+            # Fetch sections: either linked to this page object, or matching system page slugs
             query = Q(page_obj=p)
-
-            if slug_lower in ['home', 'homepage']:
+            slug_lower = p.slug.lower() if p.slug else ''
+            
+            if slug_lower == 'home':
                 query |= Q(page='homepage')
-            elif slug_lower in ['stories', 'startups', 'categories', 'cities', 'story_detail', 'startup_detail']:
+            elif slug_lower in ['stories', 'startups', 'story_detail', 'startup_detail']:
                 query |= Q(page=slug_lower)
-
-            # Fetch sections (including inactive ones for admin)
-            sections = (
-                PageSection.objects
-                .filter(query)
-                .distinct()
-                .order_by('order')
-            )
-
-            section_data = []
-            for s in sections:
-                section_data.append({
-                    'id': f"{s.section_type}-{s.id}",
-                    'type': s.section_type,
-                    'db_id': s.id,
-                    'is_active': s.is_active,
-                    'settings': {
-                        'title': s.title,
-                        'subtitle': s.subtitle,
-                        'body': s.description or s.content,
-                        'imageUrl': s.image.url if s.image else None,
-                        'buttonText': s.link_text,
-                        'buttonLink': s.link_url,
-                        **(s.settings or {})
-                    }
-                })
-
-            theme_overrides['sections'] = section_data
-
+            
+            sections = PageSection.objects.filter(query).distinct().order_by('order')
+            
+            if sections.exists():
+                theme_overrides['sections'] = []
+                for s in sections:
+                    theme_overrides['sections'].append({
+                        'id': f"{s.section_type}-{s.id}", # Consistent with frontend fetch logic
+                        'db_id': s.id, # Ensure db_id is passed so frontend recognizes it as existing
+                        'type': s.section_type,
+                        'settings': {
+                            'title': s.title,
+                            'subtitle': s.subtitle,
+                            'description': s.description,
+                            'body': s.content, # map content to body for the editor
+                            'linkText': s.link_text,
+                            'linkUrl': s.link_url,
+                            'imageUrl': s.image.url if s.image else None,
+                            'iconUrl': s.icon.url if s.icon else None,
+                            **(s.settings or {})
+                        }
+                    })
+        
         return JsonResponse({
             'id': p.id,
             'title': p.title,
@@ -2127,14 +2090,8 @@ def page_detail_admin(request, pk):
             'theme_overrides': theme_overrides,
             'updated_at': p.updated_at.isoformat() if p.updated_at else None
         })
-
     except Page.DoesNotExist:
-        return JsonResponse({'error': 'Page not found'}, status=404)
-
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return JsonResponse({'error': str(e)}, status=400)
+        return JsonResponse({'error': 'Not found'}, status=404)
 
 
 # --- MENU APIs ---
@@ -2162,11 +2119,10 @@ def layout_settings_update(request):
             if request.content_type and 'multipart/form-data' in request.content_type:
                 data = request.POST.dict()
                 
-                # Handle File Uploads (site_logo, site_favicon, etc.)
-                for file_key in request.FILES:
-                    uploaded_file = request.FILES[file_key]
-                    path = default_storage.save(f"site/{uploaded_file.name}", uploaded_file)
-                    
+                # Handle Logo Upload
+                if 'site_logo' in request.FILES:
+                    logo = request.FILES['site_logo']
+                    path = default_storage.save(f"site/{logo.name}", logo)
                     # Construct URL
                     if hasattr(default_storage, 'url'):
                         url = default_storage.url(path)
@@ -2177,7 +2133,7 @@ def layout_settings_update(request):
                     if url and not url.startswith('http'):
                         url = request.build_absolute_uri(url)
                         
-                    data[file_key] = url
+                    data['site_logo'] = url
                 
                 # Handle Logo Removal
                 if data.get('remove_logo') == 'true':
@@ -2705,7 +2661,6 @@ def startup_detail(request, slug):
             'meta_title': s.meta_title or s.name,
             'meta_description': s.meta_description or (s.description[:160] if s.description else ''),
             'meta_keywords': getattr(s, 'meta_keywords', ''),
-            'image_alt': getattr(s, 'image_alt', ''),
             'og_image': get_image_url(request, s.og_image) or get_image_url(request, s.logo),
             'canonical_override': getattr(s, 'canonical_override', '') or '',
             'noindex': getattr(s, 'noindex', False),
@@ -2729,9 +2684,6 @@ def generate_seo_view(request):
             suggestions = CitySEOGenerator(data.get('title'), data.get('description', ''))
         else:
             suggestions = generate_seo_suggestions(data)
-        # If the AI util returned an error dict, send it as an HTTP error
-        if isinstance(suggestions, dict) and 'error' in suggestions:
-            return JsonResponse(suggestions, status=503)
         return JsonResponse(suggestions)
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
@@ -2794,9 +2746,6 @@ def session_logout_view(request):
 def newsletter_subscribe(request):
     try:
         from .models import NewsletterSubscription
-        from django.core.mail import send_mail
-        from django.conf import settings
-        
         data = json.loads(request.body)
         email = data.get('email', '').strip().lower()
         if not email:
@@ -2804,32 +2753,10 @@ def newsletter_subscribe(request):
         
         # Check if already exists
         sub, created = NewsletterSubscription.objects.get_or_create(email=email)
-        status = 're-activated' if not created else 'new'
-        
         if not created and not sub.is_active:
             sub.is_active = True
             sub.save()
-            
-        # Send email to admin
-        try:
-            admin_email = getattr(settings, 'ADMIN_EMAIL', getattr(settings, 'DEFAULT_FROM_EMAIL', 'admin@startupsaga.in'))
-
-            print("admin_email", admin_email)
-
-            subject = f'New Newsletter Subscription - {email}'
-            message = f'A {"new" if created else "reactivated"} user has subscribed to the newsletter.\n\nEmail: {email}\nStatus: {status}\nTime: {sub.created_at.strftime("%Y-%m-%d %H:%M:%S") if hasattr(sub, "created_at") else "Just now"}'
-             
-            send_mail(
-                subject=subject,
-                message=message,
-                from_email=getattr(settings, 'DEFAULT_FROM_EMAIL', 'no-reply@startupsaga.in'),
-                
-                recipient_list=[admin_email],
-                fail_silently=True,  # Don't throw error if email fails, UI should still succeed
-            )
-        except Exception as e:
-            print(f"Failed to send admin notification email: {str(e)}")
-            
+        
         return JsonResponse({'message': 'Success', 'created': created}, status=201)
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=400)
