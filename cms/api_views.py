@@ -2219,41 +2219,41 @@ def seo_settings_update(request):
 @require_POST
 def seo_apply_all(request):
     """
-    Apply global SEO settings to all existing content nodes.
+    Apply global SEO settings ONLY to content that has no existing meta fields.
+    Safe to run — will not overwrite manually crafted per-item SEO.
     Supports Story, Startup, Hub/City, Category, and Custom Pages.
     """
     try:
         settings = SEOSetting.objects.all()
         seo_map = {s.key: s.value for s in settings}
-        
-        # Mapping from SEO settings keys to model field names
+
         meta_title = seo_map.get('default_meta_title', '')
         meta_desc = seo_map.get('default_meta_description', '')
-        
+
+        if not meta_title and not meta_desc:
+            return JsonResponse({'message': 'No default SEO title or description configured. Set them in SEO Settings first.'}, status=400)
+
         with transaction.atomic():
-            # Update all primary content types with global protocols
-            Story.objects.all().update(
-                meta_title=meta_title,
-                meta_description=meta_desc
-            )
-            Startup.objects.all().update(
-                meta_title=meta_title,
-                meta_description=meta_desc
-            )
-            City.objects.all().update(
-                meta_title=meta_title,
-                meta_description=meta_desc
-            )
-            Category.objects.all().update(
-                meta_title=meta_title,
-                meta_description=meta_desc
-            )
-            Page.objects.all().update(
-                meta_title=meta_title,
-                meta_description=meta_desc
-            )
-            
-        return JsonResponse({'message': 'SEO protocols synchronized across all 5 content architectures (Stories, Startups, Hubs, Categories, Pages).'})
+            # Only fill blank fields — NEVER overwrite existing per-item SEO
+            counts = {}
+            if meta_title:
+                counts['story_titles'] = Story.objects.filter(meta_title='').update(meta_title=meta_title)
+                counts['startup_titles'] = Startup.objects.filter(meta_title='').update(meta_title=meta_title)
+                counts['city_titles'] = City.objects.filter(meta_title='').update(meta_title=meta_title)
+                counts['category_titles'] = Category.objects.filter(meta_title='').update(meta_title=meta_title)
+                counts['page_titles'] = Page.objects.filter(meta_title='').update(meta_title=meta_title)
+            if meta_desc:
+                counts['story_descs'] = Story.objects.filter(meta_description='').update(meta_description=meta_desc)
+                counts['startup_descs'] = Startup.objects.filter(meta_description='').update(meta_description=meta_desc)
+                counts['city_descs'] = City.objects.filter(meta_description='').update(meta_description=meta_desc)
+                counts['category_descs'] = Category.objects.filter(meta_description='').update(meta_description=meta_desc)
+                counts['page_descs'] = Page.objects.filter(meta_description='').update(meta_description=meta_desc)
+
+        total_filled = sum(counts.values())
+        return JsonResponse({
+            'message': f'SEO defaults applied to {total_filled} empty fields across all 5 content types. Existing SEO was preserved.',
+            'details': counts
+        })
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
 
@@ -2913,7 +2913,7 @@ def sitemap_view(request):
     for c in City.objects.filter(status='published').values_list('slug', flat=True):
         lines.append(f'  <url><loc>{base}/cities/{c}/</loc><changefreq>weekly</changefreq><priority>0.7</priority></url>')
     for p in Page.objects.filter(status='published').values_list('slug', flat=True):
-        lines.append(f'  <url><loc>{base}/pages/{p}/</loc><changefreq>monthly</changefreq><priority>0.6</priority></url>')
+        lines.append(f'  <url><loc>{base}/{p}/</loc><changefreq>monthly</changefreq><priority>0.6</priority></url>')
     lines.append('</urlset>')
     return HttpResponse('\n'.join(lines), content_type='application/xml')
 

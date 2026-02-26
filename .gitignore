@@ -1,0 +1,101 @@
+# ===========================
+# Backend .gitignore
+# Django + Python
+# ===========================
+
+# ---- Python Bytecode ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.pyo
+*.pyd
+
+# ---- Distribution / Packaging ----
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ---- Virtual Environments ----
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+Pipfile.lock
+
+# ---- Environment Variables ----
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+*.env
+
+# ---- Django Specific ----
+db.sqlite3
+db.sqlite3-journal
+media/
+staticfiles/
+static_root/
+local_settings.py
+
+# ---- Logs ----
+logs/
+*.log
+django_debug.log
+
+# ---- Testing / Coverage ----
+.coverage
+.coverage.*
+coverage.xml
+coverage/
+htmlcov/
+.tox/
+.nox/
+.pytest_cache/
+nosetests.xml
+test-results/
+
+# ---- Type Checking ----
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pytype/
+
+# ---- Jupyter Notebooks ----
+.ipynb_checkpoints
+
+# ---- Misc / Debug Scripts ----
+fix_media.py
+test.py
+*.txt
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- Editor ----
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.suo
+*.swp
+*.swo
