@@ -50,11 +50,10 @@ Pipfile.lock
 
 # ---- Django Specific ----
 db.sqlite3
-db.sqlite3-journal
-media/
-staticfiles/
-static_root/
-local_settings.py
+# db.sqlite3-journal
+# staticfiles/
+# static_root/
+# local_settings.py
 
 # ---- Logs ----
 logs/

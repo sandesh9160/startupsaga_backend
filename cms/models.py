@@ -104,6 +104,7 @@ class Startup(models.Model):
     meta_description = models.TextField(blank=True)
     meta_keywords = models.TextField(blank=True, help_text='Comma-separated SEO keywords')
     og_image = models.ImageField(upload_to='seo/og_images/', blank=True, null=True)
+    image_alt = models.CharField(max_length=300, blank=True, help_text='Alt text for logo/featured image')
     canonical_override = models.URLField(blank=True)
     noindex = models.BooleanField(default=False)
     

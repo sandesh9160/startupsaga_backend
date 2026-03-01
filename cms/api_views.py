@@ -79,6 +79,7 @@ def _serialize_story(s: Story):
         'read_time': getattr(s, 'read_time', None),
         'content': s.content,
         'thumbnail': s.thumbnail.url if s.thumbnail else None,
+        'og_image': s.og_image.url if hasattr(s, 'og_image') and s.og_image else None,
         'category': s.category.name if s.category else None,
         'categorySlug': s.category.slug if s.category and s.category.slug else (slugify(s.category.name) if s.category else None),
         'city': s.city.name if s.city else None,
@@ -372,6 +373,7 @@ def startup_create(request):
                     meta_title=data.get('meta_title', ''),
                     meta_description=data.get('meta_description', ''),
                     meta_keywords=data.get('meta_keywords', ''),
+                    image_alt=data.get('image_alt', ''),
                     is_featured=bool(data.get('is_featured', False))
                 )
 
@@ -437,6 +439,7 @@ def startup_update(request, slug):
                 'funding_stage', 'business_model', 'team_size',
                 'founders_data', 'industry_tags',
                 'status', 'meta_title', 'meta_description',
+                'meta_keywords', 'image_alt',
                 'canonical_override', 'noindex',
             ]
             for key in list(data.keys()):
@@ -536,8 +539,8 @@ def startup_update(request, slug):
                             setattr(startup, img_field, ContentFile(base64.b64decode(imgstr), name=fname))
                         except Exception as e:
                             print(f"Error decoding image {img_field}: {e}")
-                    elif isinstance(img_data, str) and img_data.startswith('http'):
-                        # Already a URL, don't change it
+                    elif isinstance(img_data, str) and (img_data.startswith('http') or img_data.startswith('/media/')):
+                        # Already a URL or relative path, don't change it
                         pass
 
             startup.save()
@@ -1457,7 +1460,7 @@ def submission_list(request):
         for s in submissions_list:
             logo_url = s.logo.url if s.logo else None
             if logo_url:
-                if logo_url.startswith('http'):
+                if logo_url.startswith('http') or logo_url.startswith('/media/'):
                     pass
                 elif logo_url.startswith('/'):
                     logo_url = base_url + logo_url
@@ -1780,6 +1783,26 @@ def story_create(request):
                     # don't fail story creation for thumbnail copy errors
                     pass
 
+            # Handle og_image (base64)
+            og_data = data.get('og_image', '')
+            if og_data:
+                if og_data.startswith('data:image'):
+                    try:
+                        format, imgstr = og_data.split(';base64,')
+                        ext = format.split('/')[-1]
+                        story.og_image = ContentFile(base64.b64decode(imgstr), name=f'{story.slug}-og.{ext}')
+                        story.save()
+                    except Exception as e:
+                        print(f"Error saving story OG image: {e}")
+                elif og_data.startswith('http') or og_data.startswith('/media/'):
+                    pass
+            elif related_startup and hasattr(related_startup, 'og_image') and related_startup.og_image:
+                try:
+                    story.og_image = related_startup.og_image
+                    story.save()
+                except Exception:
+                    pass
+
             return JsonResponse({
                 'id': story.id,
                 'slug': story.slug,
@@ -1904,6 +1927,22 @@ def story_update(request, story_id):
                     ext = format.split('/')[-1]
                     image_data = ContentFile(base64.b64decode(imgstr), name=f'{story.slug}.{ext}')
                     story.thumbnail = image_data
+
+            # Handle og_image update (base64 or clear)
+            if 'og_image' in data:
+                og_data = data['og_image']
+                if not og_data:
+                    story.og_image = None
+                elif isinstance(og_data, str) and og_data.startswith('data:image'):
+                    try:
+                        format, imgstr = og_data.split(';base64,')
+                        ext = format.split('/')[-1]
+                        story.og_image = ContentFile(base64.b64decode(imgstr), name=f'{story.slug}-og.{ext}')
+                    except Exception as e:
+                        print(f"Error decoding story OG image: {e}")
+                elif isinstance(og_data, str) and (og_data.startswith('http') or og_data.startswith('/media/')):
+                    # Keep existing URL or relative path
+                    pass
 
             story.save()
             _create_redirect_if_slug_changed(old_story_slug, story.slug, 'stories')
@@ -2292,18 +2331,123 @@ def footer_list(request):
 @csrf_exempt
 def media_list(request):
     if request.method == 'GET':
-        media = MediaItem.objects.all().order_by('-created_at')
+        from .models import Startup, Story, City
         data = []
-        for m in media:
-            data.append({
-                'id': m.id,
-                'title': m.title,
-                'url': m.file.url if m.file else None,
-                'type': m.file_type,
-                'alt_text': m.alt_text,
-                'created_at': m.created_at.isoformat()
-            })
-        return JsonResponse(data, safe=False)
+        _id = 1
+        
+        # 1. Fetch MediaItems
+        for m in MediaItem.objects.all().order_by('-created_at'):
+            if m.file and m.file.name:
+                import os
+                folder = os.path.dirname(m.file.name)
+                data.append({
+                    'id': m.id,
+                    'title': m.title,
+                    'url': m.file.url,
+                    'path': m.file.name,
+                    'folder': folder.replace('\\', '/') if folder else 'media_items',
+                    'type': m.file_type,
+                    'alt_text': m.alt_text,
+                    'created_at': m.created_at.isoformat()
+                })
+        
+        # 2. Fetch Startups Logos and OM Images
+        for s in Startup.objects.all():
+            if s.logo and s.logo.name:
+                import os
+                folder = os.path.dirname(s.logo.name)
+                data.append({
+                    'id': f"startup-logo-{s.id}",
+                    'title': f"{s.name} Logo",
+                    'url': s.logo.url,
+                    'path': s.logo.name,
+                    'folder': folder.replace('\\', '/') if folder else 'startups/logos',
+                    'type': 'image',
+                    'alt_text': s.name,
+                    'created_at': s.created_at.isoformat() if s.created_at else ''
+                })
+            if s.og_image and s.og_image.name:
+                import os
+                folder = os.path.dirname(s.og_image.name)
+                data.append({
+                    'id': f"startup-og-{s.id}",
+                    'title': f"{s.name} OG Image",
+                    'url': s.og_image.url,
+                    'path': s.og_image.name,
+                    'folder': folder.replace('\\', '/') if folder else 'startups/og',
+                    'type': 'image',
+                    'alt_text': s.name,
+                    'created_at': s.created_at.isoformat() if s.created_at else ''
+                })
+                
+        # 3. Fetch Stories Thumbnails and OG
+        for st in Story.objects.all():
+            if st.thumbnail and st.thumbnail.name:
+                import os
+                folder = os.path.dirname(st.thumbnail.name)
+                data.append({
+                    'id': f"story-thumb-{st.id}",
+                    'title': f"{st.title} Thumbnail",
+                    'url': st.thumbnail.url,
+                    'path': st.thumbnail.name,
+                    'folder': folder.replace('\\', '/') if folder else 'stories/thumbnails',
+                    'type': 'image',
+                    'alt_text': st.title,
+                    'created_at': st.created_at.isoformat() if st.created_at else ''
+                })
+            if st.og_image and st.og_image.name:
+                import os
+                folder = os.path.dirname(st.og_image.name)
+                data.append({
+                    'id': f"story-og-{st.id}",
+                    'title': f"{st.title} OG Image",
+                    'url': st.og_image.url,
+                    'path': st.og_image.name,
+                    'folder': folder.replace('\\', '/') if folder else 'stories/og',
+                    'type': 'image',
+                    'alt_text': st.title,
+                    'created_at': st.created_at.isoformat() if st.created_at else ''
+                })
+                
+        # 4. Fetch Cities Images
+        for c in City.objects.all():
+            if c.image and c.image.name:
+                import os
+                folder = os.path.dirname(c.image.name)
+                data.append({
+                    'id': f"city-img-{c.id}",
+                    'title': f"{c.name} Image",
+                    'url': c.image.url,
+                    'path': c.image.name,
+                    'folder': folder.replace('\\', '/') if folder else 'cities/images',
+                    'type': 'image',
+                    'alt_text': c.name,
+                    'created_at': ''
+                })
+            if hasattr(c, 'og_image') and c.og_image and c.og_image.name:
+                import os
+                folder = os.path.dirname(c.og_image.name)
+                data.append({
+                    'id': f"city-og-{c.id}",
+                    'title': f"{c.name} OG Image",
+                    'url': c.og_image.url,
+                    'path': c.og_image.name,
+                    'folder': folder.replace('\\', '/') if folder else 'seo/og_images',
+                    'type': 'image',
+                    'alt_text': c.name,
+                    'created_at': ''
+                })
+        
+        # Deduplicate by path so we don't show the same image twice
+        seen_paths = set()
+        deduped_data = []
+        for item in data:
+            if item['path'] not in seen_paths:
+                seen_paths.add(item['path'])
+                deduped_data.append(item)
+                
+        deduped_data.sort(key=lambda x: (x['folder'], x['title']))
+        return JsonResponse(deduped_data, safe=False)
 
     if request.method == 'POST':
         try:
