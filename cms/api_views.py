@@ -1490,6 +1490,10 @@ def submission_list(request):
                 'status': s.status,
                 'logo': logo_url,
                 'thumbnail': thumbnail_url,
+                'meta_title': s.meta_title,
+                'meta_description': s.meta_description,
+                'meta_keywords': s.meta_keywords,
+                'image_alt': s.image_alt,
                 'startup_slug': startup.slug if startup else None,
                 'created_at': s.created_at.strftime("%Y-%m-%d %H:%M")
             })
@@ -1540,6 +1544,10 @@ def submission_list(request):
             'status': s.status,
             'logo': logo_url,
             'thumbnail': thumbnail_url,
+            'meta_title': s.meta_title,
+            'meta_description': s.meta_description,
+            'meta_keywords': s.meta_keywords,
+            'image_alt': s.image_alt,
             'startup_slug': startup.slug if startup else None,
             'created_at': s.created_at.strftime("%Y-%m-%d %H:%M")
         })
@@ -1580,6 +1588,10 @@ def submission_update(request, pk):
             if 'category' in data: s.category = data['category']
             if 'full_story' in data: s.full_story = data['full_story']
             if 'funding_stage' in data: s.funding_stage = data['funding_stage']
+            if 'meta_title' in data: s.meta_title = data['meta_title']
+            if 'meta_description' in data: s.meta_description = data['meta_description']
+            if 'meta_keywords' in data: s.meta_keywords = data['meta_keywords']
+            if 'image_alt' in data: s.image_alt = data['image_alt']
             
             # Handle Logo Update
             logo_data = data.get('logo')
@@ -1629,6 +1641,10 @@ def submission_detail(request, pk):
             'status': s.status,
             'logo': logo_url,
             'thumbnail': thumbnail_url,
+            'meta_title': s.meta_title,
+            'meta_description': s.meta_description,
+            'meta_keywords': s.meta_keywords,
+            'image_alt': s.image_alt,
             'created_at': s.created_at.strftime("%Y-%m-%d %H:%M")
         })
     except StartupSubmission.DoesNotExist:
@@ -1667,6 +1683,11 @@ def update_submission_status(request, pk):
                     city=city_obj,
                     category=category_obj,
                     logo=s.logo,
+                    og_image=s.og_image,
+                    meta_title=s.meta_title,
+                    meta_description=s.meta_description,
+                    meta_keywords=s.meta_keywords,
+                    image_alt=s.image_alt,
                     status='published', # Auto-publish
                     is_featured=False
                 )

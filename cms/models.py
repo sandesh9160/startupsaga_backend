@@ -211,6 +211,13 @@ class StartupSubmission(models.Model):
     logo = models.ImageField(upload_to='submissions/logos/', blank=True, null=True)
     thumbnail = models.ImageField(upload_to='submissions/thumbnails/', blank=True, null=True)
     
+    # SEO
+    meta_title = models.CharField(max_length=200, blank=True)
+    meta_description = models.TextField(blank=True)
+    meta_keywords = models.TextField(blank=True, help_text='Comma-separated SEO keywords')
+    og_image = models.ImageField(upload_to='seo/og_images/', blank=True, null=True)
+    image_alt = models.CharField(max_length=300, blank=True, help_text='Alt text for logo/thumbnail')
+    
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     created_at = models.DateTimeField(auto_now_add=True)
 
