@@ -31,7 +31,6 @@ DEBUG = os.getenv('DEBUG', 'True') == 'True'
 
 ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', '*').split(',')
 
-CSRF_TRUSTED_ORIGINS = ['http://localhost:3000', 'http://127.0.0.1:3000']
 
 
 
@@ -164,10 +163,12 @@ CSRF_COOKIE_SECURE = False
 CSRF_COOKIE_HTTPONLY = False  # Required for Next.js to read token
 CSRF_COOKIE_SAMESITE = "Lax"
 
-CSRF_TRUSTED_ORIGINS = [
-    "http://localhost:3000",
-    "http://localhost:3001",
-]
+# Comma-separated list of fully-qualified origins allowed to make CSRF-protected requests.
+# Example for production: https://yourdomain.com,https://admin.yourdomain.com
+CSRF_TRUSTED_ORIGINS = os.getenv(
+    'CSRF_TRUSTED_ORIGINS',
+    'http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000'
+).split(',')
 
 # REST Framework & JWT (spec: JWT authentication)
 REST_FRAMEWORK = {
@@ -179,9 +180,9 @@ REST_FRAMEWORK = {
 
 from datetime import timedelta
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
-    'ROTATE_REFRESH_TOKENS': True,
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=int(os.getenv('JWT_ACCESS_TOKEN_MINUTES', '60'))),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=int(os.getenv('JWT_REFRESH_TOKEN_DAYS', '7'))),
+    'ROTATE_REFRESH_TOKENS': os.getenv('JWT_ROTATE_REFRESH_TOKENS', 'True') == 'True',
 }
 
 
