@@ -83,7 +83,7 @@ class Startup(models.Model):
     slug = models.SlugField(unique=True, blank=True)
     logo = models.ImageField(upload_to='startups/logos/', blank=True, null=True)
     tagline = models.CharField(max_length=300, blank=True)
-    description = models.TextField()
+    description = models.TextField(blank=True)
     website_url = models.URLField(blank=True)
     founded_year = models.IntegerField(blank=True, null=True)
     city = models.ForeignKey(City, on_delete=models.SET_NULL, null=True, related_name='startups')
@@ -104,6 +104,7 @@ class Startup(models.Model):
     meta_description = models.TextField(blank=True)
     meta_keywords = models.TextField(blank=True, help_text='Comma-separated SEO keywords')
     og_image = models.ImageField(upload_to='seo/og_images/', blank=True, null=True)
+    image_alt = models.CharField(max_length=300, blank=True, help_text='Alt text for logo/featured image')
     canonical_override = models.URLField(blank=True)
     noindex = models.BooleanField(default=False)
     
@@ -149,7 +150,7 @@ class Story(models.Model):
     title = models.CharField(max_length=300)
     slug = models.SlugField(unique=True, blank=True)
     excerpt = models.TextField(blank=True)
-    content = models.TextField()
+    content = models.TextField(blank=True, default='')
     thumbnail = models.ImageField(upload_to='stories/thumbnails/', blank=True, null=True)
     category = models.ForeignKey(Category, on_delete=models.SET_NULL, null=True, related_name='stories')
     city = models.ForeignKey(City, on_delete=models.SET_NULL, null=True, related_name='stories')
@@ -209,6 +210,13 @@ class StartupSubmission(models.Model):
     business_model = models.CharField(max_length=50, blank=True)
     logo = models.ImageField(upload_to='submissions/logos/', blank=True, null=True)
     thumbnail = models.ImageField(upload_to='submissions/thumbnails/', blank=True, null=True)
+    
+    # SEO
+    meta_title = models.CharField(max_length=200, blank=True)
+    meta_description = models.TextField(blank=True)
+    meta_keywords = models.TextField(blank=True, help_text='Comma-separated SEO keywords')
+    og_image = models.ImageField(upload_to='seo/og_images/', blank=True, null=True)
+    image_alt = models.CharField(max_length=300, blank=True, help_text='Alt text for logo/thumbnail')
     
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     created_at = models.DateTimeField(auto_now_add=True)
@@ -431,11 +439,12 @@ class NewsletterSubscription(models.Model):
     email = models.EmailField(unique=True)
     token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     is_active = models.BooleanField(default=True)
+    is_blocked = models.BooleanField(default=False)
     last_sent_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return f"{self.email} ({'Active' if self.is_active else 'Inactive'})"
+        return f"{self.email} ({'Active' if self.is_active else 'Inactive'}{', Blocked' if self.is_blocked else ''})"
 
 
 class NewsletterTemplate(models.Model):
@@ -446,6 +455,9 @@ class NewsletterTemplate(models.Model):
     header_title = models.CharField(max_length=255, default="StartupSaga")
     header_subtitle = models.CharField(max_length=255, default="Weekly stories, founder insights, and ecosystem updates")
     body_intro = models.CharField(max_length=255, default="Top Stories This Week")
+    body_text = models.TextField(blank=True, default="")
+    admin_body_intro = models.CharField(max_length=255, default="Fresh Lead")
+    admin_body_text = models.TextField(blank=True, default="<p>A user has just subscribed to the newsletter:</p>")
     footer_text = models.TextField(default="© {year} StartupSaga. All rights reserved.\nYou received this email because you subscribed to our newsletter.")
     accent_color = models.CharField(max_length=7, default="#ea580c")
     is_active = models.BooleanField(default=True)
