@@ -201,8 +201,9 @@ SITE_URL = os.getenv('SITE_URL', 'http://localhost:3000')
 
 # AI Settings
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-2.0-flash')
+GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')
 
+ADMIN_EMAIL = os.getenv('ADMIN_EMAIL')
 # In development, use console backend if no SMTP user is provided
 if DEBUG and not EMAIL_HOST_USER:
     EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'

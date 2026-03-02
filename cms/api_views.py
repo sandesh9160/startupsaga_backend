@@ -1,17 +1,17 @@
 from django.http import JsonResponse, HttpResponse
-from django.views.decorators.http import require_GET
 from django.views.decorators.csrf import csrf_exempt
 from django.core.paginator import Paginator
 from django.db.models import Q, Count
+from django.utils import timezone
 from django.utils.text import slugify
-from .models import Startup, Story, Category, City, Page, PageSection, PageThemeOverride, NavigationItem, FooterSetting, SEOSetting, MediaItem, LayoutSetting, AIPrompt, Redirect
+from .models import Startup, Story, Category, City, Page, PageSection, PageThemeOverride, NavigationItem, FooterSetting, SEOSetting, MediaItem, LayoutSetting, AIPrompt, Redirect, NewsletterSubscription, NewsletterTemplate
 from django.forms.models import model_to_dict
 import json
 import base64
 from django.core.files.base import ContentFile
 from django.db import transaction
 from django.contrib.auth import authenticate, login, logout
-from django.views.decorators.http import require_POST
+from django.views.decorators.http import require_GET, require_POST, require_http_methods
 from .ai_utils import (
     generate_seo_suggestions, 
     generate_ai_content, 
@@ -1435,6 +1435,28 @@ def media_list(request):
     } for i in items]
     return JsonResponse(data, safe=False)
 
+@csrf_exempt
+def media_upload(request):
+    if request.method == 'POST':
+        try:
+            uploaded_file = request.FILES.get('file')
+            if not uploaded_file:
+                return JsonResponse({'error': 'No file provided'}, status=400)
+            
+            # Create a new MediaItem
+            media_item = MediaItem.objects.create(
+                title=uploaded_file.name[:200], # max length 200
+                file=uploaded_file,
+                file_type=uploaded_file.content_type[:50] if uploaded_file.content_type else ''
+            )
+            
+            # The frontend expects { "url": "..." }
+            url = request.build_absolute_uri(media_item.file.url)
+            return JsonResponse({'url': url, 'id': media_item.id, 'title': media_item.title})
+        except Exception as e:
+            return JsonResponse({'error': str(e)}, status=500)
+    return JsonResponse({'error': 'Method not allowed'}, status=405)
+
 @require_GET
 def submission_list(request):
     print("DEBUG: hits submission_list")
@@ -1665,29 +1687,51 @@ def update_submission_status(request, pk):
                 if s.category:
                     category_obj = Category.objects.filter(name__iexact=s.category).first()
                     if not category_obj:
-                        category_obj = Category.objects.create(name=s.category)
+                        base_slug = slugify(s.category)
+                        unique_slug = base_slug
+                        counter = 1
+                        while Category.objects.filter(slug=unique_slug).exists():
+                            unique_slug = f"{base_slug}-{counter}"
+                            counter += 1
+                        category_obj = Category.objects.create(name=s.category, slug=unique_slug)
 
                 # Handle City Lookup
                 city_obj = None
                 if s.city:
                     city_obj = City.objects.filter(name__iexact=s.city).first()
                     if not city_obj:
-                        city_obj = City.objects.create(name=s.city)
+                        base_slug = slugify(s.city)
+                        unique_slug = base_slug
+                        counter = 1
+                        while City.objects.filter(slug=unique_slug).exists():
+                            unique_slug = f"{base_slug}-{counter}"
+                            counter += 1
+                        city_obj = City.objects.create(name=s.city, slug=unique_slug)
 
-                # Create the Startup and keep reference
+                # Create the Startup and handle slug collisions
+                base_slug = slugify(s.startup_name)
+                unique_slug = base_slug
+                counter = 1
+                while Startup.objects.filter(slug=unique_slug).exists():
+                    unique_slug = f"{base_slug}-{counter}"
+                    counter += 1
+
                 new_startup = Startup.objects.create(
                     name=s.startup_name,
+                    slug=unique_slug,
                     founder_name=s.founder_name,
                     website_url=s.website,
-                    description=s.description,
+                    description=s.description if s.description else f"Meet {s.startup_name}.",
                     city=city_obj,
                     category=category_obj,
+                    funding_stage=s.funding_stage,
+                    business_model=s.business_model if s.business_model else 'other',
                     logo=s.logo,
                     og_image=s.og_image,
-                    meta_title=s.meta_title,
-                    meta_description=s.meta_description,
+                    meta_title=s.meta_title or s.startup_name,
+                    meta_description=s.meta_description or s.description,
                     meta_keywords=s.meta_keywords,
-                    image_alt=s.image_alt,
+                    image_alt=s.image_alt or s.startup_name,
                     status='published', # Auto-publish
                     is_featured=False
                 )
@@ -1696,12 +1740,18 @@ def update_submission_status(request, pk):
             s.save()
             # If we created a startup, include its details in response
             if status == 'approved' and 'new_startup' in locals():
-                return JsonResponse({'message': 'Status updated', 'created_startup': {'id': new_startup.id, 'slug': new_startup.slug}})
+                return JsonResponse({
+                    'message': 'Status updated and Startup profile created', 
+                    'created_startup': {'id': new_startup.id, 'slug': new_startup.slug}
+                })
             return JsonResponse({'message': 'Status updated'})
         except StartupSubmission.DoesNotExist:
-            return JsonResponse({'error': 'Not found'}, status=404)
+            return JsonResponse({'error': 'Submission not found'}, status=404)
+        except json.JSONDecodeError:
+            return JsonResponse({'error': 'Invalid JSON in request body'}, status=400)
         except Exception as e:
-            return JsonResponse({'error': str(e)}, status=400)
+            # More descriptive error for debugging
+            return JsonResponse({'error': f"Failed to process: {str(e)}", 'type': type(e).__name__}, status=400)
     return JsonResponse({'error': 'Method not allowed'}, status=405)
 
 @csrf_exempt
@@ -2849,8 +2899,15 @@ def generate_seo_view(request):
             suggestions = CitySEOGenerator(data.get('title'), data.get('description', ''))
         else:
             suggestions = generate_seo_suggestions(data)
+            
+        if suggestions and 'error' in suggestions:
+            print(f"❌ AI SEO Error: {suggestions['error']}")
+            return JsonResponse(suggestions, status=400)
+            
         return JsonResponse(suggestions)
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return JsonResponse({'error': str(e)}, status=500)
 
 
@@ -2870,8 +2927,14 @@ def generate_content_view(request):
             context = data.get('context', {})
             result = generate_ai_content(prompt_name, context)
 
+        if result and 'error' in result:
+            print(f"❌ AI Content Error: {result['error']}")
+            return JsonResponse(result, status=400)
+
         return JsonResponse(result)
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return JsonResponse({'error': str(e)}, status=500)
 
 
@@ -2906,43 +2969,331 @@ def session_logout_view(request):
     logout(request)
     return JsonResponse({"ok": True})
 
+# @csrf_exempt
+# @require_POST
+# def newsletter_subscribe(request):
+#     try:
+#         from .models import NewsletterSubscription
+#         data = json.loads(request.body)
+#         email = data.get('email', '').strip().lower()
+#         if not email:
+#             return JsonResponse({'error': 'Email is required'}, status=400)
+        
+#         # Check if already exists
+#         sub, created = NewsletterSubscription.objects.get_or_create(email=email)
+#         if not created and not sub.is_active:
+#             sub.is_active = True
+#             sub.save()
+        
+#         # --- SEND ADMIN ALERT (New Subscription) ---
+#         if created:
+#             try:
+#                 from .models import NewsletterTemplate
+#                 from django.core.mail import send_mail
+#                 from django.conf import settings
+                
+#                 # Fetch the active template or fallback
+#                 template = NewsletterTemplate.objects.filter(is_active=True).first()
+#                 if template:
+#                     subject = template.subject_format.replace('{first_story_title}', 'New Subscriber Alert')
+#                     # Admin alert specific fields
+#                     admin_intro = getattr(template, 'admin_body_intro', 'Fresh Lead')
+#                     admin_text = getattr(template, 'admin_body_text', '<p>A user has just subscribed to the newsletter:</p>')
+                    
+#                     html_content = f"""
+#                     <div style="font-family: {template.font_family}; max-width: 600px; margin: 0 auto; border: 1px solid #eee; border-radius: 8px; overflow: hidden;">
+#                         <div style="background: {template.accent_color}; height: 6px;"></div>
+#                         <div style="padding: 30px; text-align: center; border-bottom: 1px solid #eee;">
+#                             {f'<img src="{template.logo_url}" alt="Logo" style="height: 30px; margin-bottom: 15px;">' if template.logo_url else f'<h1 style="margin: 0; color: #111;">StartupSaga</h1>'}
+#                             <h2 style="margin: 10px 0 0 0; color: #111;">Admin Alert: New Subscriber</h2>
+#                         </div>
+#                         <div style="padding: 30px; text-align: center;">
+#                             <span style="display: inline-block; padding: 6px 16px; border-radius: 20px; background: {template.accent_color}15; color: {template.accent_color}; font-size: 12px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px;">
+#                                 {admin_intro}
+#                             </span>
+#                             <div style="margin: 20px 0; color: #555; line-height: 1.6;">
+#                                 {admin_text}
+#                             </div>
+#                             <div style="font-size: 20px; font-weight: bold; color: #111; padding: 15px 0; border-top: 1px solid #eee; border-bottom: 1px solid #eee; margin: 20px 0;">
+#                                 {email}
+#                             </div>
+#                         </div>
+#                         <div style="padding: 20px; text-align: center; background: #f9f9f9; color: #888; font-size: 11px;">
+#                             © 2026 StartupSaga Administrative System<br>
+#                             Confidential Notification • Internal Use Only
+#                         </div>
+#                     </div>
+#                     """
+#                 else:
+#                     # Generic fallback if no template exists
+#                     subject = "StartupSaga: New Subscriber Alert"
+#                     html_content = f"""
+#                     <h2>New Subscriber</h2>
+#                     <p>A new user has subscribed to the newsletter:</p>
+#                     <p><strong>{email}</strong></p>
+#                     """
+
+#                 # Send the email to the admin
+#                 # In production, this might be settings.ADMIN_EMAIL, but for now we'll 
+#                 # send it to a designated admin email or fallback to the EMAIL_HOST_USER
+#                 admin_email = getattr(settings, 'DEFAULT_FROM_EMAIL', 'admin@startupsaga.com') # Replace with actual admin email config if available
+                
+#                 send_mail(
+#                     subject=subject,
+#                     message=f"New subscriber: {email}", # Plain text fallback
+#                     from_email=settings.DEFAULT_FROM_EMAIL,
+#                     recipient_list=[admin_email], # Sending to admin
+#                     html_message=html_content,    # Using html_message for Django > 4.x
+#                     fail_silently=True,           # Don't throw errors that break the user experience
+#                 )
+#             except Exception as mail_err:
+#                 print(f"DEBUG: Failed to send admin alert email: {mail_err}")
+#                 import traceback
+#                 traceback.print_exc()
+
+#         return JsonResponse({'message': 'Success', 'created': created}, status=201)
+#     except Exception as e:
+#         return JsonResponse({'error': str(e)}, status=400)
+
 @csrf_exempt
 @require_POST
 def newsletter_subscribe(request):
+    from django.core.validators import validate_email
+    from django.core.exceptions import ValidationError
+    from django.core.mail import send_mail
     try:
-        from .models import NewsletterSubscription
-        data = json.loads(request.body)
+        # -------- Parse JSON safely --------
+        try:
+            data = json.loads(request.body)
+        except json.JSONDecodeError:
+            return JsonResponse({'error': 'Invalid JSON'}, status=400)
+
         email = data.get('email', '').strip().lower()
+
         if not email:
             return JsonResponse({'error': 'Email is required'}, status=400)
-        
-        # Check if already exists
+
+        # -------- Validate email format --------
+        try:
+            validate_email(email)
+        except ValidationError:
+            return JsonResponse({'error': 'Invalid email format'}, status=400)
+
+        # -------- Create or Reactivate Subscription --------
         sub, created = NewsletterSubscription.objects.get_or_create(email=email)
+        print(sub)
+
         if not created and not sub.is_active:
             sub.is_active = True
             sub.save()
-        
-        return JsonResponse({'message': 'Success', 'created': created}, status=201)
+            reactivated = True
+        else:
+            reactivated = False
+
+        # -------- Send Admin Alert (for new or reactivated users) --------
+        if created or reactivated:
+            try:
+                template = NewsletterTemplate.objects.filter(is_active=True).first()
+
+                if template:
+                    subject = template.subject_format.replace(
+                        '{first_story_title}', 
+                        'New Subscriber Alert'
+                    )
+
+                    admin_intro = getattr(
+                        template, 
+                        'admin_body_intro', 
+                        'Fresh Lead'
+                    )
+
+                    admin_text = getattr(
+                        template, 
+                        'admin_body_text', 
+                        '<p>A user has just subscribed to the newsletter:</p>'
+                    )
+
+                    logo_src = request.build_absolute_uri(template.logo_url) if template.logo_url else ''
+                    if 'media/media/' in logo_src:
+                        logo_src = logo_src.replace('media/media/', 'media/')
+                    logo_tag = f'<img src="{logo_src}" alt="Logo" style="height: 30px; margin-bottom: 15px;">' if logo_src else '<h1 style="margin: 0; color: #111;">StartupSaga</h1>'
+                    html_content = f"""
+                    <div style="font-family: {template.font_family}; max-width: 600px; margin: 0 auto; border: 1px solid #eee; border-radius: 8px; overflow: hidden;">
+                        <div style="background: {template.accent_color}; height: 6px;"></div>
+                        <div style="padding: 30px; text-align: center; border-bottom: 1px solid #eee;">
+                            {logo_tag}
+                            <h2 style="margin: 10px 0 0 0; color: #111;">Admin Alert: New Subscriber</h2>
+                        </div>
+                        <div style="padding: 30px; text-align: center;">
+                            <span style="display: inline-block; padding: 6px 16px; border-radius: 20px; background: {template.accent_color}15; color: {template.accent_color}; font-size: 12px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px;">
+                                {admin_intro}
+                            </span>
+                            <div style="margin: 20px 0; color: #555; line-height: 1.6;">
+                                {admin_text}
+                            </div>
+                            <div style="font-size: 20px; font-weight: bold; color: #111; padding: 15px 0; border-top: 1px solid #eee; border-bottom: 1px solid #eee; margin: 20px 0;">
+                                {email}
+                            </div>
+                        </div>
+                        <div style="padding: 20px; text-align: center; background: #f9f9f9; color: #888; font-size: 11px;">
+                            © 2026 StartupSaga Administrative System<br>
+                            Confidential Notification • Internal Use Only
+                        </div>
+                    </div>
+                    """
+                else:
+                    subject = "StartupSaga: New Subscriber Alert"
+                    html_content = f"""
+                    <h2>New Subscriber</h2>
+                    <p>A new user has subscribed to the newsletter:</p>
+                    <p><strong>{email}</strong></p>
+                    """
+
+                # Proper admin email (must define in settings.py)
+                admin_email = getattr(settings, 'ADMIN_EMAIL', ["sandeshkencugundi01@gmail.com"])
+
+                if admin_email:
+                    send_mail(
+                        subject=subject,
+                        message=f"New subscriber: {email}",
+                        from_email=settings.DEFAULT_FROM_EMAIL,
+                        recipient_list=[admin_email],
+                        html_message=html_content,
+                        fail_silently=True,
+                    )
+
+            except Exception as mail_err:
+                print(f"Email sending failed: {mail_err}")
+
+        # -------- Proper Response Codes --------
+        if created:
+            return JsonResponse({'message': 'Subscribed successfully'}, status=201)
+        elif reactivated:
+            return JsonResponse({'message': 'Subscription reactivated'}, status=200)
+        else:
+            return JsonResponse({'message': 'Already subscribed'}, status=200)
+
     except Exception as e:
-        return JsonResponse({'error': str(e)}, status=400)
+        import traceback
+        traceback.print_exc()
+        return JsonResponse({'error': f'Something went wrong: {str(e)}'}, status=500)
 
 @require_GET
 def newsletter_list(request):
-    from .models import NewsletterSubscription
     subs = NewsletterSubscription.objects.all().order_by('-created_at')
     data = [{
         'id': s.id,
         'email': s.email,
         'is_active': s.is_active,
+        'is_blocked': s.is_blocked,
         'created_at': s.created_at.strftime("%Y-%m-%d %H:%M")
     } for s in subs]
     return JsonResponse(data, safe=False)
+
+# @csrf_exempt
+# @require_POST
+# def newsletter_delete(request, pk):
+#     try:
+#         sub = NewsletterSubscription.objects.get(pk=pk)
+#         sub.delete()
+#         return JsonResponse({'message': 'Deleted successfully'})
+#     except NewsletterSubscription.DoesNotExist:
+#         return JsonResponse({'error': 'Not found'}, status=404)
+#     except Exception as e:
+#         return JsonResponse({'error': str(e)}, status=400)
+
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def newsletter_delete(request, pk):
+    try:
+        sub = NewsletterSubscription.objects.get(pk=pk)
+        print(sub)
+        sub.delete()
+        return JsonResponse({'message': 'Deleted successfully'}, status=200)
+    except NewsletterSubscription.DoesNotExist:
+        return JsonResponse({'error': 'Not found'}, status=404)
+    except Exception:
+        return JsonResponse({'error': 'Something went wrong'}, status=500)
+
+
+@csrf_exempt
+@require_POST
+def newsletter_toggle_block(request, pk):
+    try:
+        sub = NewsletterSubscription.objects.get(pk=pk)
+        sub.is_blocked = not sub.is_blocked
+        sub.save()
+        return JsonResponse({'is_blocked': sub.is_blocked})
+    except NewsletterSubscription.DoesNotExist:
+        return JsonResponse({'error': 'Not found'}, status=404)
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=400)
+
+@csrf_exempt
+@require_http_methods(["GET", "POST"])
+def newsletter_test_admin_alert(request):
+    try:
+        from django.core.mail import send_mail
+        from django.template.loader import render_to_string
+        
+        template = NewsletterTemplate.objects.filter(is_active=True).first()
+        if not template:
+            template = NewsletterTemplate.objects.create(name="Default Template")
+            
+        subject = f"{template.header_title}: Test Admin Alert"
+        
+        logo_src = request.build_absolute_uri(template.logo_url) if template.logo_url else ''
+        if 'media/media/' in logo_src:
+            logo_src = logo_src.replace('media/media/', 'media/')
+        logo_tag = f'<img src="{logo_src}" alt="Logo" style="max-height: 40px;">' if logo_src else f'<h1 style="color: {template.accent_color}; margin: 0;">{template.header_title}</h1>'
+
+        # We'll use the template's actual content to show how dynamic it is
+        html_content = f"""
+        <div style="font-family: {template.font_family}; max-width: 600px; margin: 0 auto; border-top: 6px solid {template.accent_color}; padding: 20px; background-color: #ffffff;">
+            <div style="margin-bottom: 20px; text-align: center;">
+                {logo_tag}
+            </div>
+            
+            <h2 style="color: #111; border-bottom: 1px solid #eee; padding-bottom: 10px;">Admin Alert: Setup Confirmed</h2>
+            
+            <div style="color: #444; line-height: 1.6; margin: 20px 0;">
+                <p><strong>Test Message:</strong></p>
+                <div style="background: #fdfdfd; padding: 15px; border-left: 4px solid {template.accent_color}; font-style: italic;">
+                    {template.admin_body_text if template.admin_body_text else "This is a test notification from your dashboard."}
+                </div>
+            </div>
+
+            <div style="background: #f9f9f9; padding: 15px; border-radius: 8px; margin: 20px 0; font-size: 13px; color: #666;">
+                <p style="margin: 5px 0;"><strong>Active Template:</strong> {template.name}</p>
+                <p style="margin: 5px 0;"><strong>Status:</strong> System Online</p>
+                <p style="margin: 5px 0;"><strong>SMTP User:</strong> {settings.EMAIL_HOST_USER}</p>
+            </div>
+            
+            <p style="font-size: 11px; color: #999; border-top: 1px solid #eee; padding-top: 15px; text-align: center;">
+                {template.footer_text.replace('{year}', str(timezone.now().year))}
+            </p>
+        </div>
+        """
+        
+        send_mail(
+            subject,
+            "Test admin alert notification.",
+            settings.DEFAULT_FROM_EMAIL,
+            [settings.EMAIL_HOST_USER],
+            html_message=html_content,
+            fail_silently=False,
+        )
+        
+        return JsonResponse({'message': 'Test email sent successfully'})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JsonResponse({'error': f"Failed to send test email: {str(e)}"}, status=500)
 
 @csrf_exempt
 def newsletter_unsubscribe(request):
     if request.method in ['POST', 'GET']:
         try:
-            from .models import NewsletterSubscription
             # Handle both GET (from email link) and POST (from UI)
             if request.method == 'GET':
                 email = request.GET.get('email')
@@ -2968,8 +3319,8 @@ def newsletter_unsubscribe(request):
 
 @require_GET
 def newsletter_template_list(request):
-    from .models import NewsletterTemplate
     templates = NewsletterTemplate.objects.all().order_by('-updated_at')
+    print(templates)
     data = []
     for t in templates:
         data.append({
@@ -2981,6 +3332,9 @@ def newsletter_template_list(request):
             'header_title': t.header_title,
             'header_subtitle': t.header_subtitle,
             'body_intro': t.body_intro,
+            'body_text': t.body_text,
+            'admin_body_intro': t.admin_body_intro,
+            'admin_body_text': t.admin_body_text,
             'footer_text': t.footer_text,
             'accent_color': t.accent_color,
             'is_active': t.is_active,
@@ -2990,39 +3344,56 @@ def newsletter_template_list(request):
 
 @csrf_exempt
 def newsletter_template_update(request, pk=None):
-    from .models import NewsletterTemplate
     if request.method in ['POST', 'PUT', 'PATCH']:
         try:
             data = json.loads(request.body)
+            print(f"DEBUG: Newsletter template update started for PK={pk}. Data: {data}")
+            
             if pk:
                 template = NewsletterTemplate.objects.get(pk=pk)
             else:
                 template = NewsletterTemplate.objects.create(name=data.get('name', 'Newsletter Template'))
 
+            # Basic identity
             if 'name' in data: template.name = data['name']
+            
+            # Content & Format
             if 'subject_format' in data: template.subject_format = data['subject_format']
-            if 'logo_url' in data: template.logo_url = data['logo_url']
+            if 'logo_url' in data: 
+                logo_val = data['logo_url']
+                if logo_val and 'media/media/' in logo_val:
+                    logo_val = logo_val.replace('media/media/', 'media/')
+                # Convert empty string to None for the URLField
+                template.logo_url = logo_val if logo_val != "" else None
+            
             if 'font_family' in data: template.font_family = data['font_family']
             if 'header_title' in data: template.header_title = data['header_title']
             if 'header_subtitle' in data: template.header_subtitle = data['header_subtitle']
             if 'body_intro' in data: template.body_intro = data['body_intro']
+            if 'body_text' in data: template.body_text = data['body_text']
+            if 'admin_body_intro' in data: template.admin_body_intro = data['admin_body_intro']
+            if 'admin_body_text' in data: template.admin_body_text = data['admin_body_text']
             if 'footer_text' in data: template.footer_text = data['footer_text']
             if 'accent_color' in data: template.accent_color = data['accent_color']
+            
             if 'is_active' in data:
                 template.is_active = data['is_active']
                 if template.is_active:
-                    # Deactivate others if this is active
+                    # Ensure only one template is active globally
                     NewsletterTemplate.objects.exclude(pk=template.pk).update(is_active=False)
 
             template.save()
+            print(f"DEBUG: Newsletter template PK={template.pk} saved successfully.")
             return JsonResponse({'message': 'Template updated', 'id': template.id})
         except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print(f"DEBUG: Error saving newsletter template: {str(e)}")
             return JsonResponse({'error': str(e)}, status=400)
     return JsonResponse({'error': 'Method not allowed'}, status=405)
 
 @require_GET
 def newsletter_template_detail(request, pk):
-    from .models import NewsletterTemplate
     try:
         t = NewsletterTemplate.objects.get(pk=pk)
         return JsonResponse({
@@ -3034,12 +3405,28 @@ def newsletter_template_detail(request, pk):
             'header_title': t.header_title,
             'header_subtitle': t.header_subtitle,
             'body_intro': t.body_intro,
+            'body_text': t.body_text,
+            'admin_body_intro': t.admin_body_intro,
+            'admin_body_text': t.admin_body_text,
             'footer_text': t.footer_text,
             'accent_color': t.accent_color,
             'is_active': t.is_active,
         })
     except NewsletterTemplate.DoesNotExist:
         return JsonResponse({'error': 'Not found'}, status=404)
+
+@csrf_exempt
+def newsletter_template_delete(request, pk):
+    if request.method == 'DELETE':
+        try:
+            t = NewsletterTemplate.objects.get(pk=pk)
+            if t.is_active:
+                return JsonResponse({'error': 'Cannot delete active template'}, status=400)
+            t.delete()
+            return JsonResponse({'message': 'Template deleted'})
+        except NewsletterTemplate.DoesNotExist:
+            return JsonResponse({'error': 'Not found'}, status=404)
+    return JsonResponse({'error': 'Method not allowed'}, status=405)
 
 
 # ---------------------------
