@@ -69,8 +69,65 @@ def _create_redirect_if_slug_changed(old_slug, new_slug, path_prefix):
     if from_path != to_path:
         Redirect.objects.get_or_create(from_path=from_path, defaults={'to_path': to_path, 'is_permanent': True})
 
-def _serialize_story(s: Story):
-    excerpt = (s.excerpt or (_strip_html(s.content)[:200] if s.content else "")) if hasattr(s, 'excerpt') else (_strip_html(s.content)[:200] if s.content else "")
+# def _serialize_story(s: Story):
+#     excerpt = (s.excerpt or (_strip_html(s.content)[:200] if s.content else "")) if hasattr(s, 'excerpt') else (_strip_html(s.content)[:200] if s.content else "")
+#     return {
+#         'id': s.id,
+#         'title': s.title,
+#         'slug': s.slug,
+#         'excerpt': excerpt,
+#         'read_time': getattr(s, 'read_time', None),
+#         'content': s.content,
+#         'thumbnail': s.thumbnail.url if s.thumbnail else None,
+#         'og_image': s.og_image.url if hasattr(s, 'og_image') and s.og_image else None,
+#         'category': s.category.name if s.category else None,
+#         'categorySlug': s.category.slug if s.category and s.category.slug else (slugify(s.category.name) if s.category else None),
+#         'city': s.city.name if s.city else None,
+#         'citySlug': s.city.slug if s.city and s.city.slug else (slugify(s.city.name) if s.city else None),
+#         'author': s.author if s.author else 'Editorial Team',
+#         'sections': s.sections if s.sections else None,
+#         'publishDate': s.published_at.strftime("%b %d, %Y") if s.published_at else None,
+#         'published_at': s.published_at.isoformat() if s.published_at else None,
+#         'updated_at': s.updated_at.isoformat() if s.updated_at else None,
+#         'isFeatured': s.is_featured,
+#         'stage': s.stage,
+#         'views': s.view_count,
+#         'trendingScore': s.trending_score,
+#         'related_startup': {
+#             'id': s.related_startup.id,
+#             'name': s.related_startup.name,
+#             'slug': s.related_startup.slug,
+#             'logo': s.related_startup.logo.url if s.related_startup.logo else None,
+#             'category': s.related_startup.category.name if s.related_startup.category else None,
+#             'city': s.related_startup.city.name if s.related_startup.city else None,
+#             'citySlug': s.related_startup.city.slug if s.related_startup.city else None,
+#             'founded_year': s.related_startup.founded_year,
+#             'team_size': s.related_startup.team_size,
+#             'founders_data': _get_founders(None, s.related_startup), # Use None for request if not available or just pass it if possible
+#             'website_url': s.related_startup.website_url,
+#         } if s.related_startup else None,
+#         'meta_title': s.meta_title,
+#         'meta_description': s.meta_description,
+#         'meta_keywords': s.meta_keywords,
+#         'image_alt': s.image_alt,
+#         'show_table_of_contents': s.show_table_of_contents,
+#         'status': s.status,
+#      }
+
+def _serialize_story(s: Story, request=None):
+    excerpt = (
+        (s.excerpt or (_strip_html(s.content)[:200] if s.content else ""))
+        if hasattr(s, 'excerpt')
+        else (_strip_html(s.content)[:200] if s.content else "")
+    )
+
+    def absolute_url(file_field):
+        if file_field and hasattr(file_field, "url"):
+            if request:
+                return request.build_absolute_uri(file_field.url)
+            return file_field.url
+        return None
+
     return {
         'id': s.id,
         'title': s.title,
@@ -78,34 +135,41 @@ def _serialize_story(s: Story):
         'excerpt': excerpt,
         'read_time': getattr(s, 'read_time', None),
         'content': s.content,
-        'thumbnail': s.thumbnail.url if s.thumbnail else None,
-        'og_image': s.og_image.url if hasattr(s, 'og_image') and s.og_image else None,
+
+        # ✅ Fixed Image URLs
+        'thumbnail': absolute_url(s.thumbnail),
+        'og_image': absolute_url(s.og_image) if hasattr(s, 'og_image') else None,
+
         'category': s.category.name if s.category else None,
         'categorySlug': s.category.slug if s.category and s.category.slug else (slugify(s.category.name) if s.category else None),
         'city': s.city.name if s.city else None,
         'citySlug': s.city.slug if s.city and s.city.slug else (slugify(s.city.name) if s.city else None),
+
         'author': s.author if s.author else 'Editorial Team',
         'sections': s.sections if s.sections else None,
         'publishDate': s.published_at.strftime("%b %d, %Y") if s.published_at else None,
         'published_at': s.published_at.isoformat() if s.published_at else None,
         'updated_at': s.updated_at.isoformat() if s.updated_at else None,
+
         'isFeatured': s.is_featured,
         'stage': s.stage,
         'views': s.view_count,
         'trendingScore': s.trending_score,
+
         'related_startup': {
             'id': s.related_startup.id,
             'name': s.related_startup.name,
             'slug': s.related_startup.slug,
-            'logo': s.related_startup.logo.url if s.related_startup.logo else None,
+            'logo': absolute_url(s.related_startup.logo),
             'category': s.related_startup.category.name if s.related_startup.category else None,
             'city': s.related_startup.city.name if s.related_startup.city else None,
             'citySlug': s.related_startup.city.slug if s.related_startup.city else None,
             'founded_year': s.related_startup.founded_year,
             'team_size': s.related_startup.team_size,
-            'founders_data': _get_founders(None, s.related_startup), # Use None for request if not available or just pass it if possible
+            'founders_data': _get_founders(request, s.related_startup),
             'website_url': s.related_startup.website_url,
         } if s.related_startup else None,
+
         'meta_title': s.meta_title,
         'meta_description': s.meta_description,
         'meta_keywords': s.meta_keywords,
@@ -245,6 +309,7 @@ def startup_list(request):
         
         data = []
         for s in startups_list:
+            print(s.logo)
             logo_url = s.logo.url if s.logo else None
             if logo_url and not logo_url.startswith('http'):
                 logo_url = request.build_absolute_uri(logo_url)

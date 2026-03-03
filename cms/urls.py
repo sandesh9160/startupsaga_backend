@@ -29,6 +29,7 @@ from .activity_stats import activity_stats, platform_stats
 
 urlpatterns = [
     # Platform Analytics
+    
     path('platform-stats/', platform_stats, name='platform_stats'),
     # AI (spec: /api/ai/*)
     path('ai/generate-seo/', generate_seo_view, name='ai_generate_seo'),
@@ -137,7 +138,7 @@ urlpatterns = [
     path('theme/', theme_settings, name='theme_settings'),
     path('auth/signout/', session_logout_view, name='session_logout'),
     path('newsletter/subscribe/', newsletter_subscribe, name='newsletter_subscribe'),
-    
+
     path('newsletter/list/', newsletter_list, name='newsletter_list'),
     path('newsletter/test-admin-alert/', newsletter_test_admin_alert, name='newsletter_test_admin_alert'),
     path('newsletter/<int:pk>/delete/', newsletter_delete, name='newsletter_delete'),
