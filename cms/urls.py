@@ -7,7 +7,7 @@ from .api_views import (
     page_list, page_detail,
     sections_list, section_create, section_update, section_delete,
     submit_startup, nav_items_list,
-    footer_list, seo_settings_list, media_list,
+    footer_list, seo_settings_list, media_list, media_upload,
     prompt_list, prompt_create, prompt_update, prompt_delete, prompt_detail, prompt_defaults,
     prompt_apply_all,
     layout_settings_list, theme_settings,
@@ -21,13 +21,15 @@ from .api_views import (
     seo_apply_all,
     generate_seo_view, generate_content_view, session_login_view, session_logout_view,
     newsletter_subscribe, newsletter_list, newsletter_unsubscribe,
-    newsletter_template_list, newsletter_template_update, newsletter_template_detail,
+    newsletter_delete, newsletter_toggle_block, newsletter_test_admin_alert,
+    newsletter_template_list, newsletter_template_update, newsletter_template_detail, newsletter_template_delete,
     redirect_resolve, sitemap_view, robots_view,
 )
 from .activity_stats import activity_stats, platform_stats
 
 urlpatterns = [
     # Platform Analytics
+    
     path('platform-stats/', platform_stats, name='platform_stats'),
     # AI (spec: /api/ai/*)
     path('ai/generate-seo/', generate_seo_view, name='ai_generate_seo'),
@@ -117,6 +119,7 @@ urlpatterns = [
     path('seo-settings/update/', seo_settings_update, name='seo_settings_update'),
     path('seo-settings/apply-all/', seo_apply_all, name='seo_apply_all'),
     path('media/', media_list, name='media_list'),
+    path('media/upload/', media_upload, name='media_upload'),
     
 
     # Prompt CRUD endpoints
@@ -135,12 +138,17 @@ urlpatterns = [
     path('theme/', theme_settings, name='theme_settings'),
     path('auth/signout/', session_logout_view, name='session_logout'),
     path('newsletter/subscribe/', newsletter_subscribe, name='newsletter_subscribe'),
+
     path('newsletter/list/', newsletter_list, name='newsletter_list'),
+    path('newsletter/test-admin-alert/', newsletter_test_admin_alert, name='newsletter_test_admin_alert'),
+    path('newsletter/<int:pk>/delete/', newsletter_delete, name='newsletter_delete'),
+    path('newsletter/<int:pk>/toggle-block/', newsletter_toggle_block, name='newsletter_toggle_block'),
     path('newsletter/unsubscribe/', newsletter_unsubscribe, name='newsletter_unsubscribe'),
     path('newsletter/templates/', newsletter_template_list, name='newsletter_template_list'),
     path('newsletter/templates/create/', newsletter_template_update, name='newsletter_template_create'),
     path('newsletter/templates/<int:pk>/', newsletter_template_detail, name='newsletter_template_detail'),
     path('newsletter/templates/<int:pk>/update/', newsletter_template_update, name='newsletter_template_update'),
+    path('newsletter/templates/<int:pk>/delete/', newsletter_template_delete, name='newsletter_template_delete'),
     
     # Dashboard Analytics
     path('activity-stats/', activity_stats, name='activity_stats'),
