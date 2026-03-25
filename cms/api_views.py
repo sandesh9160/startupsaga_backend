@@ -3029,7 +3029,6 @@ def session_login_view(request):
 
 
 @csrf_exempt
-@require_POST
 def session_logout_view(request):
     logout(request)
     return JsonResponse({"ok": True})
