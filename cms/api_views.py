@@ -22,6 +22,12 @@ from .ai_utils import (
 )
 from django.conf import settings
 
+
+def _normalize_image_extension(format_str):
+    ext = (format_str.split('/')[-1] if format_str else '').lower()
+    ext = ext.replace('+xml', '')
+    return 'svg' if ext == 'svgxml' else ext
+
 def _get_founders(request, startup):
     """
     Unified founder data retrieval. 
@@ -102,8 +108,12 @@ def _serialize_story(s: Story):
             'city': s.related_startup.city.name if s.related_startup.city else None,
             'citySlug': s.related_startup.city.slug if s.related_startup.city else None,
             'founded_year': s.related_startup.founded_year,
+            'funding_stage': getattr(s.related_startup, 'funding_stage', None) or getattr(s.related_startup, 'stage', ''),
+            'business_model': getattr(s.related_startup, 'business_model', ''),
             'team_size': s.related_startup.team_size,
+            'founder_name': s.related_startup.founder_name,
             'founders_data': _get_founders(None, s.related_startup), # Use None for request if not available or just pass it if possible
+            'industry_tags': getattr(s.related_startup, 'industry_tags', None) or [],
             'website_url': s.related_startup.website_url,
         } if s.related_startup else None,
         'meta_title': s.meta_title,
@@ -262,16 +272,17 @@ def trending_stories(request):
 
 @require_GET
 def startup_list(request):
-    if request.user.is_authenticated and request.user.is_staff:
-        startups = Startup.objects.select_related('category', 'city').order_by('-is_featured', '-created_at')
-    else:
-        startups = Startup.objects.filter(status='published').select_related('category', 'city').order_by('-is_featured', '-created_at')
-
     search = request.GET.get('search')
     category = request.GET.get('category')
     city = request.GET.get('city')
     stage = request.GET.get('stage')
     status = request.GET.get('status')
+    allow_unpublished = request.user.is_authenticated or status in {'all', 'draft'}
+
+    if allow_unpublished:
+        startups = Startup.objects.select_related('category', 'city').order_by('-is_featured', '-created_at')
+    else:
+        startups = Startup.objects.filter(status='published').select_related('category', 'city').order_by('-is_featured', '-created_at')
 
     if status and status != 'all':
         startups = startups.filter(status__iexact=status)
@@ -395,9 +406,24 @@ def startup_create(request):
     if request.method == 'POST':
         try:
             data = json.loads(request.body)
+            print("[startup_create] incoming payload:", data)
             name = (data.get('name') or '').strip()
             if not name:
                 return JsonResponse({'error': 'Name is required'}, status=400)
+
+            founded_year = data.get('founded_year')
+            if founded_year in ("", None):
+                founded_year = None
+            else:
+                try:
+                    founded_year = int(founded_year)
+                except (TypeError, ValueError):
+                    founded_year = None
+
+            business_model = (data.get('business_model') or '').strip().lower()
+            valid_business_models = {choice[0] for choice in Startup.BUSINESS_MODEL_CHOICES}
+            if business_model and business_model not in valid_business_models:
+                business_model = 'other'
             
             # Generate unique slug
             base_slug = data.get('slug') or slugify(name)
@@ -414,7 +440,7 @@ def startup_create(request):
                         return
                     try:
                         format, imgstr = base64_str.split(';base64,')
-                        ext = format.split('/')[-1]
+                        ext = _normalize_image_extension(format)
                         data = ContentFile(base64.b64decode(imgstr), name=f"{filename_prefix}_{slugify(name)}.{ext}")
                         instance_field.save(data.name, data, save=False)
                     except Exception as e:
@@ -425,12 +451,13 @@ def startup_create(request):
                     slug=unique_slug,
                     tagline=data.get('tagline', ''),
                     description=data.get('description', ''),
+                    content=data.get('content') or data.get('description', ''),
                     website_url=data.get('website_url', ''),
                     founder_name=data.get('founder_name', ''),
                     founder_linkedin=data.get('founder_linkedin', ''),
-                    founded_year=data.get('founded_year'),
+                    founded_year=founded_year,
                     funding_stage=data.get('stage', '') or data.get('funding_stage', ''),
-                    business_model=data.get('business_model', ''),
+                    business_model=business_model,
                     team_size=data.get('team_size', ''),
                     founders_data=data.get('founders_data', []),
                     industry_tags=data.get('industry_tags', []),
@@ -459,7 +486,11 @@ def startup_create(request):
                                 cat = Category.objects.get(name__iexact=val)
                                 startup.category_id = cat.id
                             except Category.DoesNotExist:
-                                pass
+                                cat = Category.objects.create(
+                                    name=str(val).strip(),
+                                    slug=slugify(str(val).strip())
+                                )
+                                startup.category_id = cat.id
                 
                 # Handle city
                 if 'city' in data:
@@ -472,9 +503,27 @@ def startup_create(request):
                                 city = City.objects.get(name__iexact=val)
                                 startup.city_id = city.id
                             except City.DoesNotExist:
-                                pass
+                                city = City.objects.create(
+                                    name=str(val).strip(),
+                                    slug=slugify(str(val).strip())
+                                )
+                                startup.city_id = city.id
                 
                 startup.save()
+                print("[startup_create] saved startup:", {
+                    'id': startup.id,
+                    'slug': startup.slug,
+                    'name': startup.name,
+                    'description_preview': (startup.description or '')[:300],
+                    'category_id': startup.category_id,
+                    'city_id': startup.city_id,
+                    'funding_stage': startup.funding_stage,
+                    'business_model': startup.business_model,
+                    'team_size': startup.team_size,
+                    'industry_tags': startup.industry_tags,
+                    'is_featured': startup.is_featured,
+                    'status': startup.status,
+                })
 
             return JsonResponse({
                 'id': startup.id,
@@ -483,6 +532,9 @@ def startup_create(request):
                 'message': 'Startup created successfully'
             }, status=201)
         except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print("[startup_create] failed:", repr(e))
             return JsonResponse({'error': str(e)}, status=400)
     return JsonResponse({'error': 'Method not allowed'}, status=405)
 
@@ -496,10 +548,28 @@ def startup_update(request, slug):
         startup = Startup.objects.get(slug=slug)
         data = json.loads(request.body)
         old_startup_slug = startup.slug
+        print("[startup_update] incoming request:", {
+            'slug': slug,
+            'payload': data,
+        })
+        print("[startup_update] current startup before update:", {
+            'id': startup.id,
+            'slug': startup.slug,
+            'name': startup.name,
+            'description_preview': (startup.description or '')[:300],
+            'category_id': startup.category_id,
+            'city_id': startup.city_id,
+            'funding_stage': startup.funding_stage,
+            'business_model': startup.business_model,
+            'team_size': startup.team_size,
+            'industry_tags': startup.industry_tags,
+            'is_featured': startup.is_featured,
+            'status': startup.status,
+        })
 
         with transaction.atomic():
             allowed_fields = [
-                'name', 'tagline', 'description', 'website_url',
+                'name', 'tagline', 'description', 'content', 'website_url',
                 'founder_name', 'founder_linkedin',
                 'funding_stage', 'business_model', 'team_size',
                 'founders_data', 'industry_tags',
@@ -522,6 +592,14 @@ def startup_update(request, slug):
             for field in allowed_fields:
                 if field in data:
                     setattr(startup, field, data[field])
+                    print(f"[startup_update] assigned field {field!r} -> {data[field]!r}")
+
+            if 'description' in data and 'content' not in data:
+                startup.content = data.get('description') or ''
+                print("[startup_update] mirrored description -> content")
+            if 'content' in data and 'description' not in data:
+                startup.description = data.get('content') or ''
+                print("[startup_update] mirrored content -> description")
 
             # Handle founded_year
             if 'founded_year' in data:
@@ -536,6 +614,7 @@ def startup_update(request, slug):
 
             if 'is_featured' in data:
                 startup.is_featured = bool(data['is_featured'])
+                print("[startup_update] assigned is_featured ->", startup.is_featured)
 
             # Handle category - accept both ID and name
             if 'category' in data:
@@ -544,16 +623,19 @@ def startup_update(request, slug):
                     try:
                         # Try as ID first
                         startup.category_id = int(val)
+                        print("[startup_update] resolved category as ID ->", startup.category_id)
                     except (ValueError, TypeError):
                         # If not an ID, try looking up by name
                         try:
                             cat = Category.objects.get(name__iexact=val)
                             startup.category_id = cat.id
+                            print("[startup_update] resolved category by name ->", startup.category_id)
                         except Category.DoesNotExist:
                             # Invalid category, leave unchanged
-                            pass
+                            print("[startup_update] category lookup failed, leaving unchanged ->", val)
                 else:
                     startup.category_id = None
+                    print("[startup_update] cleared category")
 
             # Handle city - accept both ID and name
             if 'city' in data:
@@ -562,16 +644,19 @@ def startup_update(request, slug):
                     try:
                         # Try as ID first
                         startup.city_id = int(val)
+                        print("[startup_update] resolved city as ID ->", startup.city_id)
                     except (ValueError, TypeError):
                         # If not an ID, try looking up by name
                         try:
                             city = City.objects.get(name__iexact=val)
                             startup.city_id = city.id
+                            print("[startup_update] resolved city by name ->", startup.city_id)
                         except City.DoesNotExist:
                             # Invalid city, leave unchanged
-                            pass
+                            print("[startup_update] city lookup failed, leaving unchanged ->", val)
                 else:
                     startup.city_id = None
+                    print("[startup_update] cleared city")
 
             # Slug update with uniqueness and 301 redirect
             if data.get('slug') and data.get('slug') != startup.slug:
@@ -582,6 +667,7 @@ def startup_update(request, slug):
                     new_slug = f"{base_slug}-{counter}"
                     counter += 1
                 startup.slug = new_slug
+                print("[startup_update] slug changed ->", startup.slug)
 
             startup.save()
             _create_redirect_if_slug_changed(old_startup_slug, startup.slug, 'startups')
@@ -593,22 +679,38 @@ def startup_update(request, slug):
                     img_data = data[img_field]
                     if not img_data:
                         setattr(startup, img_field, None)
+                        print(f"[startup_update] cleared image field {img_field}")
                     elif isinstance(img_data, str) and img_data.startswith('data:image'):
                         from django.core.files.base import ContentFile
                         import base64
                         try:
                             format, imgstr = img_data.split(';base64,')
-                            ext = format.split('/')[-1]
+                            ext = _normalize_image_extension(format)
                             fname = f'{startup.slug}-{img_field}.{ext}'
                             if img_field == 'og_image': fname = f'{startup.slug}-og.{ext}'
                             setattr(startup, img_field, ContentFile(base64.b64decode(imgstr), name=fname))
+                            print(f"[startup_update] decoded base64 image for {img_field}")
                         except Exception as e:
                             print(f"Error decoding image {img_field}: {e}")
                     elif isinstance(img_data, str) and (img_data.startswith('http') or img_data.startswith('/media/')):
                         # Already a URL or relative path, don't change it
-                        pass
+                        print(f"[startup_update] retained existing image reference for {img_field}: {img_data}")
 
             startup.save()
+            print("[startup_update] saved startup after update:", {
+                'id': startup.id,
+                'slug': startup.slug,
+                'name': startup.name,
+                'description_preview': (startup.description or '')[:300],
+                'category_id': startup.category_id,
+                'city_id': startup.city_id,
+                'funding_stage': startup.funding_stage,
+                'business_model': startup.business_model,
+                'team_size': startup.team_size,
+                'industry_tags': startup.industry_tags,
+                'is_featured': startup.is_featured,
+                'status': startup.status,
+            })
 
         return JsonResponse({
             'message': 'Updated successfully',
@@ -828,7 +930,7 @@ def city_create(request):
             image_data = data.get('image', '')
             if image_data and image_data.startswith('data:image'):
                 format, imgstr = image_data.split(';base64,')
-                ext = format.split('/')[-1]
+                ext = _normalize_image_extension(format)
                 city.image = ContentFile(base64.b64decode(imgstr), name=f'{city.slug}.{ext}')
                 city.save()
 
@@ -836,7 +938,7 @@ def city_create(request):
             og_image_data = data.get('og_image', '')
             if og_image_data and og_image_data.startswith('data:image'):
                 format, imgstr = og_image_data.split(';base64,')
-                ext = format.split('/')[-1]
+                ext = _normalize_image_extension(format)
                 city.og_image = ContentFile(base64.b64decode(imgstr), name=f'{city.slug}-og.{ext}')
                 city.save()
 
@@ -902,14 +1004,14 @@ def city_update(request, slug):
             image_data = data.get('image', '')
             if image_data and image_data.startswith('data:image'):
                 format, imgstr = image_data.split(';base64,')
-                ext = format.split('/')[-1]
+                ext = _normalize_image_extension(format)
                 city.image = ContentFile(base64.b64decode(imgstr), name=f'{city.slug}.{ext}')
             
             # Handle og_image (base64)
             og_image_data = data.get('og_image', '')
             if og_image_data and og_image_data.startswith('data:image'):
                 format, imgstr = og_image_data.split(';base64,')
-                ext = format.split('/')[-1]
+                ext = _normalize_image_extension(format)
                 city.og_image = ContentFile(base64.b64decode(imgstr), name=f'{city.slug}-og.{ext}')
 
             city.save()
@@ -1176,7 +1278,7 @@ def section_create(request):
                 from django.core.files.base import ContentFile
                 import base64
                 format, imgstr = data['image'].split(';base64,')
-                ext = format.split('/')[-1]
+                ext = _normalize_image_extension(format)
                 section.image = ContentFile(base64.b64decode(imgstr), name=f"section_{section.pk}.{ext}")
                 section.save()
 
@@ -1209,7 +1311,7 @@ def section_update(request, pk):
                 from django.core.files.base import ContentFile
                 import base64
                 format, imgstr = data['image'].split(';base64,')
-                ext = format.split('/')[-1]
+                ext = _normalize_image_extension(format)
                 section.image = ContentFile(base64.b64decode(imgstr), name=f"section_{section.pk}.{ext}")
             
             section.save()
@@ -1418,7 +1520,7 @@ def _get_field(data, *keys, default=''):
 
 def _get_extension(format_str):
     """Extract and normalize extension from base64 format string."""
-    ext = format_str.split('/')[-1]
+    ext = _normalize_image_extension(format_str)
     if 'svg' in ext: return 'svg'
     return ext
 
@@ -1437,8 +1539,13 @@ def submit_startup(request):
                 full_story=_get_field(data, 'fullStory', 'full_story', default=''),
                 city=_get_field(data, 'city', default=''),
                 category=_get_field(data, 'category', default=''),
+                founded_year=_get_field(data, 'foundedYear', 'founded_year', default='') or None,
                 funding_stage=_get_field(data, 'fundingStage', 'funding_stage', default=''),
                 business_model=_get_field(data, 'businessModel', 'business_model', default=''),
+                team_size=_get_field(data, 'teamSize', 'team_size', default=''),
+                sector=_get_field(data, 'sector', default=''),
+                industry_tags=data.get('industry_tags') or data.get('industryTags') or [],
+                founders_data=data.get('founders_data') or data.get('founders') or [],
                 status='pending'
             )
             # Handle standard file uploads (multipart/form-data)
@@ -1674,7 +1781,13 @@ def submission_update(request, pk):
             if 'city' in data: s.city = data['city']
             if 'category' in data: s.category = data['category']
             if 'full_story' in data: s.full_story = data['full_story']
+            if 'founded_year' in data: s.founded_year = data['founded_year'] or None
             if 'funding_stage' in data: s.funding_stage = data['funding_stage']
+            if 'business_model' in data: s.business_model = data['business_model']
+            if 'team_size' in data: s.team_size = data['team_size']
+            if 'sector' in data: s.sector = data['sector']
+            if 'industry_tags' in data: s.industry_tags = data['industry_tags']
+            if 'founders_data' in data: s.founders_data = data['founders_data']
             if 'meta_title' in data: s.meta_title = data['meta_title']
             if 'meta_description' in data: s.meta_description = data['meta_description']
             if 'meta_keywords' in data: s.meta_keywords = data['meta_keywords']
@@ -1684,14 +1797,14 @@ def submission_update(request, pk):
             logo_data = data.get('logo')
             if logo_data and logo_data.startswith('data:image'):
                 format, imgstr = logo_data.split(';base64,')
-                ext = format.split('/')[-1]
+                ext = _normalize_image_extension(format)
                 s.logo = ContentFile(base64.b64decode(imgstr), name=f"sub_logo_{s.id}.{ext}")
             
             # Handle Thumbnail Update
             thumbnail_data = data.get('thumbnail')
             if thumbnail_data and thumbnail_data.startswith('data:image'):
                 format, imgstr = thumbnail_data.split(';base64,')
-                ext = format.split('/')[-1]
+                ext = _normalize_image_extension(format)
                 s.thumbnail = ContentFile(base64.b64decode(imgstr), name=f"sub_thumb_{s.id}.{ext}")
                 
             s.save()
@@ -1725,6 +1838,13 @@ def submission_detail(request, pk):
             'full_story': s.full_story,
             'city': s.city,
             'category': s.category,
+            'founded_year': s.founded_year,
+            'funding_stage': s.funding_stage,
+            'business_model': s.business_model,
+            'team_size': s.team_size,
+            'sector': s.sector,
+            'industry_tags': s.industry_tags or [],
+            'founders_data': s.founders_data or [],
             'status': s.status,
             'logo': logo_url,
             'thumbnail': thumbnail_url,
@@ -1744,6 +1864,7 @@ def update_submission_status(request, pk):
             data = json.loads(request.body)
             status = data.get('status')
             s = StartupSubmission.objects.get(pk=pk)
+            print("[update_submission_status]", {"submission_id": pk, "from": s.status, "to": status})
             
             # If approving, create a Startup entity
             if status == 'approved' and s.status != 'approved':
@@ -1781,25 +1902,42 @@ def update_submission_status(request, pk):
                     unique_slug = f"{base_slug}-{counter}"
                     counter += 1
 
-                new_startup = Startup.objects.create(
-                    name=s.startup_name,
-                    slug=unique_slug,
-                    founder_name=s.founder_name,
-                    website_url=s.website,
-                    description=s.description if s.description else f"Meet {s.startup_name}.",
-                    city=city_obj,
-                    category=category_obj,
-                    funding_stage=s.funding_stage,
-                    business_model=s.business_model if s.business_model else 'other',
-                    logo=s.logo,
-                    og_image=s.og_image,
-                    meta_title=s.meta_title or s.startup_name,
-                    meta_description=s.meta_description or s.description,
-                    meta_keywords=s.meta_keywords,
-                    image_alt=s.image_alt or s.startup_name,
-                    status='published', # Auto-publish
-                    is_featured=False
-                )
+                existing_startup_query = Startup.objects.filter(name__iexact=s.startup_name)
+                if s.website:
+                    existing_startup_query = Startup.objects.filter(
+                        Q(name__iexact=s.startup_name) |
+                        Q(website_url=s.website)
+                    )
+                existing_startup = existing_startup_query.first()
+
+                if existing_startup:
+                    new_startup = existing_startup
+                    print("[update_submission_status] reusing existing startup:", new_startup.slug)
+                else:
+                    new_startup = Startup.objects.create(
+                        name=s.startup_name,
+                        slug=unique_slug,
+                        founder_name=s.founder_name,
+                        website_url=s.website,
+                        description=s.full_story or s.description or f"Meet {s.startup_name}.",
+                        city=city_obj,
+                        category=category_obj,
+                        founded_year=s.founded_year,
+                        funding_stage=s.funding_stage,
+                        business_model=(s.business_model or 'other')[:30],
+                        team_size=s.team_size,
+                        founders_data=s.founders_data or [],
+                        industry_tags=s.industry_tags or ([s.sector] if s.sector else []),
+                        logo=s.logo,
+                        og_image=s.og_image,
+                        meta_title=s.meta_title or s.startup_name,
+                        meta_description=s.meta_description or s.description,
+                        meta_keywords=s.meta_keywords,
+                        image_alt=s.image_alt or s.startup_name,
+                        status='published', # Auto-publish
+                        is_featured=False
+                    )
+                    print("[update_submission_status] created startup:", new_startup.slug)
 
             s.status = status
             s.save()
@@ -1831,7 +1969,21 @@ def story_create(request):
             import re
             
             data = json.loads(request.body)
-            
+            print("[story_create] incoming payload:", data)
+
+            normalized_title = (data.get('title') or '').strip()
+            normalized_excerpt = (data.get('excerpt') or '').strip()
+            normalized_content = data.get('content')
+            if normalized_content is None:
+                normalized_content = normalized_excerpt
+            if isinstance(normalized_content, str):
+                normalized_content = normalized_content.strip()
+            else:
+                normalized_content = str(normalized_content or '').strip()
+
+            if not normalized_title:
+                return JsonResponse({'error': 'Title is required'}, status=400)
+
             # Handle Category Lookup/Create
             category_obj = None
             if data.get('category'):
@@ -1853,7 +2005,7 @@ def story_create(request):
                     )
 
             # Generate unique slug
-            base_slug = data.get('slug') or slugify(data.get('title'))
+            base_slug = data.get('slug') or slugify(normalized_title)
             unique_slug = base_slug
             counter = 1
             
@@ -1874,9 +2026,10 @@ def story_create(request):
 
             # Create the Story
             story = Story.objects.create(
-                title=data.get('title'),
+                title=normalized_title,
                 slug=unique_slug,
-                content=data.get('content', ''),
+                excerpt=normalized_excerpt,
+                content=normalized_content,
                 category=category_obj,
                 city=city_obj,
                 related_startup=related_startup,
@@ -1894,6 +2047,12 @@ def story_create(request):
                 status=data.get('status', 'draft'),
                 published_at=timezone.now() if data.get('status') == 'published' else None
             )
+            print("[story_create] created story:", {
+                "id": story.id,
+                "slug": story.slug,
+                "content_length": len(normalized_content or ""),
+                "status": story.status,
+            })
 
             # Handle thumbnail (base64 or URL). If no thumbnail provided and we have a related startup,
             # copy the startup logo into the story thumbnail.
@@ -1902,7 +2061,7 @@ def story_create(request):
                 if thumbnail_data.startswith('data:image'):
                     # Base64 image
                     format, imgstr = thumbnail_data.split(';base64,')
-                    ext = format.split('/')[-1]
+                    ext = _normalize_image_extension(format)
                     image_data = ContentFile(base64.b64decode(imgstr), name=f'{story.slug}.{ext}')
                     story.thumbnail = image_data
                     story.save()
@@ -1925,7 +2084,7 @@ def story_create(request):
                 if og_data.startswith('data:image'):
                     try:
                         format, imgstr = og_data.split(';base64,')
-                        ext = format.split('/')[-1]
+                        ext = _normalize_image_extension(format)
                         story.og_image = ContentFile(base64.b64decode(imgstr), name=f'{story.slug}-og.{ext}')
                         story.save()
                     except Exception as e:
@@ -2060,7 +2219,7 @@ def story_update(request, story_id):
             if thumbnail_data:
                 if thumbnail_data.startswith('data:image'):
                     format, imgstr = thumbnail_data.split(';base64,')
-                    ext = format.split('/')[-1]
+                    ext = _normalize_image_extension(format)
                     image_data = ContentFile(base64.b64decode(imgstr), name=f'{story.slug}.{ext}')
                     story.thumbnail = image_data
 
@@ -2072,7 +2231,7 @@ def story_update(request, story_id):
                 elif isinstance(og_data, str) and og_data.startswith('data:image'):
                     try:
                         format, imgstr = og_data.split(';base64,')
-                        ext = format.split('/')[-1]
+                        ext = _normalize_image_extension(format)
                         story.og_image = ContentFile(base64.b64decode(imgstr), name=f'{story.slug}-og.{ext}')
                     except Exception as e:
                         print(f"Error decoding story OG image: {e}")
@@ -2797,30 +2956,46 @@ def nav_item_create(request):
     if request.method == 'POST':
         try:
             data = json.loads(request.body)
+            parent_id = data.get('parent')
+            if parent_id in ("", "null", "None", None):
+                parent_id = None
+            else:
+                parent_id = int(parent_id)
+
+            settings_data = data.get('settings', {})
+            if not isinstance(settings_data, dict):
+                settings_data = {}
+
             # Auto-calculate order if not provided or set to 0
             order = data.get('order')
-            if order is None or int(order) == 0:
-                parent_id = data.get('parent')
+            if order is None or int(order) <= 0:
                 last = NavigationItem.objects.filter(position=data['position'], parent_id=parent_id).order_by('-order').first()
                 if last:
                     order = last.order + 1
                 else:
                     order = 1
+            else:
+                order = int(order)
             
             item = NavigationItem.objects.create(
                 label=data['label'],
                 url=data.get('url', ''),
                 position=data['position'],
-                parent_id=data.get('parent'),
+                parent_id=parent_id,
                 icon=data.get('icon', ''),
                 order=order,
                 is_active=data.get('is_active', True),
-                settings=data.get('settings', {})
+                settings=settings_data
             )
             return JsonResponse({
                 'id': item.id, 
                 'label': item.label,
+                'url': item.url,
+                'parent': item.parent_id,
                 'order': item.order,
+                'position': item.position,
+                'is_active': item.is_active,
+                'settings': item.settings or {},
                 'message': 'Menu item created'
             }, status=201)
         except Exception as e:
@@ -2855,16 +3030,36 @@ def nav_item_detail(request, pk):
             if 'label' in data: item.label = data['label']
             if 'url' in data: item.url = data['url']
             if 'icon' in data: item.icon = data['icon']
-            if 'order' in data: item.order = int(data['order'])
             if 'position' in data: item.position = data['position']
-            if 'parent' in data: item.parent_id = data['parent']
+            if 'parent' in data:
+                parent_id = data['parent']
+                if parent_id in ("", "null", "None", None):
+                    item.parent_id = None
+                else:
+                    item.parent_id = int(parent_id)
+            if 'order' in data:
+                next_order = data['order']
+                if next_order in ("", None):
+                    sibling_position = data.get('position', item.position)
+                    last = NavigationItem.objects.filter(
+                        position=sibling_position,
+                        parent_id=item.parent_id
+                    ).exclude(pk=item.pk).order_by('-order').first()
+                    item.order = (last.order + 1) if last else 1
+                else:
+                    item.order = int(next_order)
             if 'is_active' in data: item.is_active = data['is_active']
-            if 'settings' in data: item.settings = data['settings']
+            if 'settings' in data:
+                item.settings = data['settings'] if isinstance(data['settings'], dict) else {}
             item.save()
             return JsonResponse({
                 'id': item.id,
                 'label': item.label,
                 'url': item.url,
+                'icon': item.icon,
+                'order': item.order,
+                'position': item.position,
+                'is_active': item.is_active,
                 'parent': item.parent_id,
                 'settings': item.settings or {}
             })
@@ -2895,6 +3090,18 @@ def startup_detail(request, slug):
     """Full detail for a startup with its related stories"""
     try:
         s = Startup.objects.select_related('category', 'city').get(slug=slug)
+        print("[startup_detail] fetched startup:", {
+            'slug': slug,
+            'id': s.id,
+            'name': s.name,
+            'description_preview': (s.description or '')[:300],
+            'category_id': s.category_id,
+            'city_id': s.city_id,
+            'funding_stage': getattr(s, 'funding_stage', ''),
+            'industry_tags': getattr(s, 'industry_tags', None) or [],
+            'is_featured': s.is_featured,
+            'status': s.status,
+        })
 
         related_stories = s.related_stories.all().order_by('-created_at')
         stories_data = [{
@@ -2912,6 +3119,7 @@ def startup_detail(request, slug):
             'name': s.name,
             'slug': s.slug,
             'description': s.description,
+            'content': s.content,
             'tagline': s.tagline or (s.description[:140] if s.description else ''),
             'logo': get_image_url(request, s.logo),
 

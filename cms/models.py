@@ -84,6 +84,7 @@ class Startup(models.Model):
     logo = models.ImageField(upload_to='startups/logos/', blank=True, null=True)
     tagline = models.CharField(max_length=300, blank=True)
     description = models.TextField(blank=True)
+    content = models.TextField(blank=True, default='')
     website_url = models.URLField(blank=True)
     founded_year = models.IntegerField(blank=True, null=True)
     city = models.ForeignKey(City, on_delete=models.SET_NULL, null=True, related_name='startups')
@@ -112,6 +113,10 @@ class Startup(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     def save(self, *args, **kwargs):
+        if self.description and not self.content:
+            self.content = self.description
+        elif self.content and not self.description:
+            self.description = self.content
         if not self.slug:
             self.slug = slugify(self.name).lower().replace(' ', '-')
         else:
@@ -206,8 +211,13 @@ class StartupSubmission(models.Model):
     full_story = models.TextField(blank=True, help_text='Full startup story')
     city = models.CharField(max_length=100, blank=True)
     category = models.CharField(max_length=100, blank=True)
+    founded_year = models.IntegerField(blank=True, null=True)
     funding_stage = models.CharField(max_length=100, blank=True)
     business_model = models.CharField(max_length=50, blank=True)
+    team_size = models.CharField(max_length=100, blank=True)
+    sector = models.CharField(max_length=100, blank=True)
+    industry_tags = models.JSONField(blank=True, null=True, help_text='List of industry tag strings')
+    founders_data = models.JSONField(blank=True, null=True, help_text='List of founders: [{"name": "...", "role": "...", "linkedin": "..."}]')
     logo = models.ImageField(upload_to='submissions/logos/', blank=True, null=True)
     thumbnail = models.ImageField(upload_to='submissions/thumbnails/', blank=True, null=True)
     

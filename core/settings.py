@@ -147,7 +147,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 CORS_ALLOW_ALL_ORIGINS = True  # For development
 CORS_ALLOW_CREDENTIALS = True  # Allow cookies to be sent
 
-SECURE_SSL_REDIRECT = True
+SECURE_SSL_REDIRECT = False
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 APPEND_SLASH = True
 
@@ -171,8 +171,10 @@ CSRF_COOKIE_SAMESITE = "Lax"
 # Example for production: https://yourdomain.com,https://admin.yourdomain.com
 CSRF_TRUSTED_ORIGINS = os.getenv(
     'CSRF_TRUSTED_ORIGINS',
-    'http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000'
+    ''
 ).split(',')
+
+print(CSRF_TRUSTED_ORIGINS)
 
 # REST Framework & JWT (spec: JWT authentication)
 REST_FRAMEWORK = {
