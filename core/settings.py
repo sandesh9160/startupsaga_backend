@@ -147,6 +147,10 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 CORS_ALLOW_ALL_ORIGINS = True  # For development
 CORS_ALLOW_CREDENTIALS = True  # Allow cookies to be sent
 
+SECURE_SSL_REDIRECT = True
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+APPEND_SLASH = True
+
 # Proxy & Development Settings
 # Session
 SESSION_COOKIE_AGE = 60 * 60 * 24 # One day
