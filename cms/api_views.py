@@ -1,17 +1,17 @@
 from django.http import JsonResponse, HttpResponse
-from django.views.decorators.http import require_GET
 from django.views.decorators.csrf import csrf_exempt
 from django.core.paginator import Paginator
 from django.db.models import Q, Count
+from django.utils import timezone
 from django.utils.text import slugify
-from .models import Startup, Story, Category, City, Page, PageSection, PageThemeOverride, NavigationItem, FooterSetting, SEOSetting, MediaItem, LayoutSetting, AIPrompt, Redirect
+from .models import Startup, Story, Category, City, Page, PageSection, PageThemeOverride, NavigationItem, FooterSetting, SEOSetting, MediaItem, LayoutSetting, AIPrompt, Redirect, NewsletterSubscription, NewsletterTemplate
 from django.forms.models import model_to_dict
 import json
 import base64
 from django.core.files.base import ContentFile
 from django.db import transaction
 from django.contrib.auth import authenticate, login, logout
-from django.views.decorators.http import require_POST
+from django.views.decorators.http import require_GET, require_POST, require_http_methods
 from .ai_utils import (
     generate_seo_suggestions, 
     generate_ai_content, 
@@ -21,6 +21,12 @@ from .ai_utils import (
     CityAltText
 )
 from django.conf import settings
+
+
+def _normalize_image_extension(format_str):
+    ext = (format_str.split('/')[-1] if format_str else '').lower()
+    ext = ext.replace('+xml', '')
+    return 'svg' if ext == 'svgxml' else ext
 
 def _get_founders(request, startup):
     """
@@ -79,6 +85,7 @@ def _serialize_story(s: Story):
         'read_time': getattr(s, 'read_time', None),
         'content': s.content,
         'thumbnail': s.thumbnail.url if s.thumbnail else None,
+        'og_image': s.og_image.url if hasattr(s, 'og_image') and s.og_image else None,
         'category': s.category.name if s.category else None,
         'categorySlug': s.category.slug if s.category and s.category.slug else (slugify(s.category.name) if s.category else None),
         'city': s.city.name if s.city else None,
@@ -101,8 +108,12 @@ def _serialize_story(s: Story):
             'city': s.related_startup.city.name if s.related_startup.city else None,
             'citySlug': s.related_startup.city.slug if s.related_startup.city else None,
             'founded_year': s.related_startup.founded_year,
+            'funding_stage': getattr(s.related_startup, 'funding_stage', None) or getattr(s.related_startup, 'stage', ''),
+            'business_model': getattr(s.related_startup, 'business_model', ''),
             'team_size': s.related_startup.team_size,
+            'founder_name': s.related_startup.founder_name,
             'founders_data': _get_founders(None, s.related_startup), # Use None for request if not available or just pass it if possible
+            'industry_tags': getattr(s.related_startup, 'industry_tags', None) or [],
             'website_url': s.related_startup.website_url,
         } if s.related_startup else None,
         'meta_title': s.meta_title,
@@ -111,7 +122,71 @@ def _serialize_story(s: Story):
         'image_alt': s.image_alt,
         'show_table_of_contents': s.show_table_of_contents,
         'status': s.status,
-    }
+     }
+
+# def _serialize_story(s: Story, request=None):
+#     excerpt = (
+#         (s.excerpt or (_strip_html(s.content)[:200] if s.content else ""))
+#         if hasattr(s, 'excerpt')
+#         else (_strip_html(s.content)[:200] if s.content else "")
+#     )
+
+#     def absolute_url(file_field):
+#         if file_field and hasattr(file_field, "url"):
+#             if request:
+#                 return request.build_absolute_uri(file_field.url)
+#             return file_field.url
+#         return None
+
+#     return {
+#         'id': s.id,
+#         'title': s.title,
+#         'slug': s.slug,
+#         'excerpt': excerpt,
+#         'read_time': getattr(s, 'read_time', None),
+#         'content': s.content,
+
+#         # ✅ Fixed Image URLs
+#         'thumbnail': absolute_url(s.thumbnail),
+#         'og_image': absolute_url(s.og_image) if hasattr(s, 'og_image') else None,
+
+#         'category': s.category.name if s.category else None,
+#         'categorySlug': s.category.slug if s.category and s.category.slug else (slugify(s.category.name) if s.category else None),
+#         'city': s.city.name if s.city else None,
+#         'citySlug': s.city.slug if s.city and s.city.slug else (slugify(s.city.name) if s.city else None),
+
+#         'author': s.author if s.author else 'Editorial Team',
+#         'sections': s.sections if s.sections else None,
+#         'publishDate': s.published_at.strftime("%b %d, %Y") if s.published_at else None,
+#         'published_at': s.published_at.isoformat() if s.published_at else None,
+#         'updated_at': s.updated_at.isoformat() if s.updated_at else None,
+
+#         'isFeatured': s.is_featured,
+#         'stage': s.stage,
+#         'views': s.view_count,
+#         'trendingScore': s.trending_score,
+
+#         'related_startup': {
+#             'id': s.related_startup.id,
+#             'name': s.related_startup.name,
+#             'slug': s.related_startup.slug,
+#             'logo': absolute_url(s.related_startup.logo),
+#             'category': s.related_startup.category.name if s.related_startup.category else None,
+#             'city': s.related_startup.city.name if s.related_startup.city else None,
+#             'citySlug': s.related_startup.city.slug if s.related_startup.city else None,
+#             'founded_year': s.related_startup.founded_year,
+#             'team_size': s.related_startup.team_size,
+#             'founders_data': _get_founders(request, s.related_startup),
+#             'website_url': s.related_startup.website_url,
+#         } if s.related_startup else None,
+
+#         'meta_title': s.meta_title,
+#         'meta_description': s.meta_description,
+#         'meta_keywords': s.meta_keywords,
+#         'image_alt': s.image_alt,
+#         'show_table_of_contents': s.show_table_of_contents,
+#         'status': s.status,
+#     }
 
 @require_GET
 def story_list(request):
@@ -197,16 +272,17 @@ def trending_stories(request):
 
 @require_GET
 def startup_list(request):
-    if request.user.is_authenticated and request.user.is_staff:
-        startups = Startup.objects.select_related('category', 'city').order_by('-is_featured', '-created_at')
-    else:
-        startups = Startup.objects.filter(status='published').select_related('category', 'city').order_by('-is_featured', '-created_at')
-
     search = request.GET.get('search')
     category = request.GET.get('category')
     city = request.GET.get('city')
     stage = request.GET.get('stage')
     status = request.GET.get('status')
+    allow_unpublished = request.user.is_authenticated or status in {'all', 'draft'}
+
+    if allow_unpublished:
+        startups = Startup.objects.select_related('category', 'city').order_by('-is_featured', '-created_at')
+    else:
+        startups = Startup.objects.filter(status='published').select_related('category', 'city').order_by('-is_featured', '-created_at')
 
     if status and status != 'all':
         startups = startups.filter(status__iexact=status)
@@ -244,6 +320,7 @@ def startup_list(request):
         
         data = []
         for s in startups_list:
+            print(s.logo)
             logo_url = s.logo.url if s.logo else None
             if logo_url and not logo_url.startswith('http'):
                 logo_url = request.build_absolute_uri(logo_url)
@@ -329,9 +406,24 @@ def startup_create(request):
     if request.method == 'POST':
         try:
             data = json.loads(request.body)
+            print("[startup_create] incoming payload:", data)
             name = (data.get('name') or '').strip()
             if not name:
                 return JsonResponse({'error': 'Name is required'}, status=400)
+
+            founded_year = data.get('founded_year')
+            if founded_year in ("", None):
+                founded_year = None
+            else:
+                try:
+                    founded_year = int(founded_year)
+                except (TypeError, ValueError):
+                    founded_year = None
+
+            business_model = (data.get('business_model') or '').strip().lower()
+            valid_business_models = {choice[0] for choice in Startup.BUSINESS_MODEL_CHOICES}
+            if business_model and business_model not in valid_business_models:
+                business_model = 'other'
             
             # Generate unique slug
             base_slug = data.get('slug') or slugify(name)
@@ -348,7 +440,7 @@ def startup_create(request):
                         return
                     try:
                         format, imgstr = base64_str.split(';base64,')
-                        ext = format.split('/')[-1]
+                        ext = _normalize_image_extension(format)
                         data = ContentFile(base64.b64decode(imgstr), name=f"{filename_prefix}_{slugify(name)}.{ext}")
                         instance_field.save(data.name, data, save=False)
                     except Exception as e:
@@ -359,12 +451,13 @@ def startup_create(request):
                     slug=unique_slug,
                     tagline=data.get('tagline', ''),
                     description=data.get('description', ''),
+                    content=data.get('content') or data.get('description', ''),
                     website_url=data.get('website_url', ''),
                     founder_name=data.get('founder_name', ''),
                     founder_linkedin=data.get('founder_linkedin', ''),
-                    founded_year=data.get('founded_year'),
+                    founded_year=founded_year,
                     funding_stage=data.get('stage', '') or data.get('funding_stage', ''),
-                    business_model=data.get('business_model', ''),
+                    business_model=business_model,
                     team_size=data.get('team_size', ''),
                     founders_data=data.get('founders_data', []),
                     industry_tags=data.get('industry_tags', []),
@@ -372,6 +465,7 @@ def startup_create(request):
                     meta_title=data.get('meta_title', ''),
                     meta_description=data.get('meta_description', ''),
                     meta_keywords=data.get('meta_keywords', ''),
+                    image_alt=data.get('image_alt', ''),
                     is_featured=bool(data.get('is_featured', False))
                 )
 
@@ -392,7 +486,11 @@ def startup_create(request):
                                 cat = Category.objects.get(name__iexact=val)
                                 startup.category_id = cat.id
                             except Category.DoesNotExist:
-                                pass
+                                cat = Category.objects.create(
+                                    name=str(val).strip(),
+                                    slug=slugify(str(val).strip())
+                                )
+                                startup.category_id = cat.id
                 
                 # Handle city
                 if 'city' in data:
@@ -405,9 +503,27 @@ def startup_create(request):
                                 city = City.objects.get(name__iexact=val)
                                 startup.city_id = city.id
                             except City.DoesNotExist:
-                                pass
+                                city = City.objects.create(
+                                    name=str(val).strip(),
+                                    slug=slugify(str(val).strip())
+                                )
+                                startup.city_id = city.id
                 
                 startup.save()
+                print("[startup_create] saved startup:", {
+                    'id': startup.id,
+                    'slug': startup.slug,
+                    'name': startup.name,
+                    'description_preview': (startup.description or '')[:300],
+                    'category_id': startup.category_id,
+                    'city_id': startup.city_id,
+                    'funding_stage': startup.funding_stage,
+                    'business_model': startup.business_model,
+                    'team_size': startup.team_size,
+                    'industry_tags': startup.industry_tags,
+                    'is_featured': startup.is_featured,
+                    'status': startup.status,
+                })
 
             return JsonResponse({
                 'id': startup.id,
@@ -416,6 +532,9 @@ def startup_create(request):
                 'message': 'Startup created successfully'
             }, status=201)
         except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print("[startup_create] failed:", repr(e))
             return JsonResponse({'error': str(e)}, status=400)
     return JsonResponse({'error': 'Method not allowed'}, status=405)
 
@@ -429,14 +548,33 @@ def startup_update(request, slug):
         startup = Startup.objects.get(slug=slug)
         data = json.loads(request.body)
         old_startup_slug = startup.slug
+        print("[startup_update] incoming request:", {
+            'slug': slug,
+            'payload': data,
+        })
+        print("[startup_update] current startup before update:", {
+            'id': startup.id,
+            'slug': startup.slug,
+            'name': startup.name,
+            'description_preview': (startup.description or '')[:300],
+            'category_id': startup.category_id,
+            'city_id': startup.city_id,
+            'funding_stage': startup.funding_stage,
+            'business_model': startup.business_model,
+            'team_size': startup.team_size,
+            'industry_tags': startup.industry_tags,
+            'is_featured': startup.is_featured,
+            'status': startup.status,
+        })
 
         with transaction.atomic():
             allowed_fields = [
-                'name', 'tagline', 'description', 'website_url',
+                'name', 'tagline', 'description', 'content', 'website_url',
                 'founder_name', 'founder_linkedin',
                 'funding_stage', 'business_model', 'team_size',
                 'founders_data', 'industry_tags',
                 'status', 'meta_title', 'meta_description',
+                'meta_keywords', 'image_alt',
                 'canonical_override', 'noindex',
             ]
             for key in list(data.keys()):
@@ -454,6 +592,14 @@ def startup_update(request, slug):
             for field in allowed_fields:
                 if field in data:
                     setattr(startup, field, data[field])
+                    print(f"[startup_update] assigned field {field!r} -> {data[field]!r}")
+
+            if 'description' in data and 'content' not in data:
+                startup.content = data.get('description') or ''
+                print("[startup_update] mirrored description -> content")
+            if 'content' in data and 'description' not in data:
+                startup.description = data.get('content') or ''
+                print("[startup_update] mirrored content -> description")
 
             # Handle founded_year
             if 'founded_year' in data:
@@ -468,6 +614,7 @@ def startup_update(request, slug):
 
             if 'is_featured' in data:
                 startup.is_featured = bool(data['is_featured'])
+                print("[startup_update] assigned is_featured ->", startup.is_featured)
 
             # Handle category - accept both ID and name
             if 'category' in data:
@@ -476,16 +623,19 @@ def startup_update(request, slug):
                     try:
                         # Try as ID first
                         startup.category_id = int(val)
+                        print("[startup_update] resolved category as ID ->", startup.category_id)
                     except (ValueError, TypeError):
                         # If not an ID, try looking up by name
                         try:
                             cat = Category.objects.get(name__iexact=val)
                             startup.category_id = cat.id
+                            print("[startup_update] resolved category by name ->", startup.category_id)
                         except Category.DoesNotExist:
                             # Invalid category, leave unchanged
-                            pass
+                            print("[startup_update] category lookup failed, leaving unchanged ->", val)
                 else:
                     startup.category_id = None
+                    print("[startup_update] cleared category")
 
             # Handle city - accept both ID and name
             if 'city' in data:
@@ -494,16 +644,19 @@ def startup_update(request, slug):
                     try:
                         # Try as ID first
                         startup.city_id = int(val)
+                        print("[startup_update] resolved city as ID ->", startup.city_id)
                     except (ValueError, TypeError):
                         # If not an ID, try looking up by name
                         try:
                             city = City.objects.get(name__iexact=val)
                             startup.city_id = city.id
+                            print("[startup_update] resolved city by name ->", startup.city_id)
                         except City.DoesNotExist:
                             # Invalid city, leave unchanged
-                            pass
+                            print("[startup_update] city lookup failed, leaving unchanged ->", val)
                 else:
                     startup.city_id = None
+                    print("[startup_update] cleared city")
 
             # Slug update with uniqueness and 301 redirect
             if data.get('slug') and data.get('slug') != startup.slug:
@@ -514,6 +667,7 @@ def startup_update(request, slug):
                     new_slug = f"{base_slug}-{counter}"
                     counter += 1
                 startup.slug = new_slug
+                print("[startup_update] slug changed ->", startup.slug)
 
             startup.save()
             _create_redirect_if_slug_changed(old_startup_slug, startup.slug, 'startups')
@@ -525,22 +679,38 @@ def startup_update(request, slug):
                     img_data = data[img_field]
                     if not img_data:
                         setattr(startup, img_field, None)
+                        print(f"[startup_update] cleared image field {img_field}")
                     elif isinstance(img_data, str) and img_data.startswith('data:image'):
                         from django.core.files.base import ContentFile
                         import base64
                         try:
                             format, imgstr = img_data.split(';base64,')
-                            ext = format.split('/')[-1]
+                            ext = _normalize_image_extension(format)
                             fname = f'{startup.slug}-{img_field}.{ext}'
                             if img_field == 'og_image': fname = f'{startup.slug}-og.{ext}'
                             setattr(startup, img_field, ContentFile(base64.b64decode(imgstr), name=fname))
+                            print(f"[startup_update] decoded base64 image for {img_field}")
                         except Exception as e:
                             print(f"Error decoding image {img_field}: {e}")
-                    elif isinstance(img_data, str) and img_data.startswith('http'):
-                        # Already a URL, don't change it
-                        pass
+                    elif isinstance(img_data, str) and (img_data.startswith('http') or img_data.startswith('/media/')):
+                        # Already a URL or relative path, don't change it
+                        print(f"[startup_update] retained existing image reference for {img_field}: {img_data}")
 
             startup.save()
+            print("[startup_update] saved startup after update:", {
+                'id': startup.id,
+                'slug': startup.slug,
+                'name': startup.name,
+                'description_preview': (startup.description or '')[:300],
+                'category_id': startup.category_id,
+                'city_id': startup.city_id,
+                'funding_stage': startup.funding_stage,
+                'business_model': startup.business_model,
+                'team_size': startup.team_size,
+                'industry_tags': startup.industry_tags,
+                'is_featured': startup.is_featured,
+                'status': startup.status,
+            })
 
         return JsonResponse({
             'message': 'Updated successfully',
@@ -760,7 +930,7 @@ def city_create(request):
             image_data = data.get('image', '')
             if image_data and image_data.startswith('data:image'):
                 format, imgstr = image_data.split(';base64,')
-                ext = format.split('/')[-1]
+                ext = _normalize_image_extension(format)
                 city.image = ContentFile(base64.b64decode(imgstr), name=f'{city.slug}.{ext}')
                 city.save()
 
@@ -768,7 +938,7 @@ def city_create(request):
             og_image_data = data.get('og_image', '')
             if og_image_data and og_image_data.startswith('data:image'):
                 format, imgstr = og_image_data.split(';base64,')
-                ext = format.split('/')[-1]
+                ext = _normalize_image_extension(format)
                 city.og_image = ContentFile(base64.b64decode(imgstr), name=f'{city.slug}-og.{ext}')
                 city.save()
 
@@ -834,14 +1004,14 @@ def city_update(request, slug):
             image_data = data.get('image', '')
             if image_data and image_data.startswith('data:image'):
                 format, imgstr = image_data.split(';base64,')
-                ext = format.split('/')[-1]
+                ext = _normalize_image_extension(format)
                 city.image = ContentFile(base64.b64decode(imgstr), name=f'{city.slug}.{ext}')
             
             # Handle og_image (base64)
             og_image_data = data.get('og_image', '')
             if og_image_data and og_image_data.startswith('data:image'):
                 format, imgstr = og_image_data.split(';base64,')
-                ext = format.split('/')[-1]
+                ext = _normalize_image_extension(format)
                 city.og_image = ContentFile(base64.b64decode(imgstr), name=f'{city.slug}-og.{ext}')
 
             city.save()
@@ -1108,7 +1278,7 @@ def section_create(request):
                 from django.core.files.base import ContentFile
                 import base64
                 format, imgstr = data['image'].split(';base64,')
-                ext = format.split('/')[-1]
+                ext = _normalize_image_extension(format)
                 section.image = ContentFile(base64.b64decode(imgstr), name=f"section_{section.pk}.{ext}")
                 section.save()
 
@@ -1141,7 +1311,7 @@ def section_update(request, pk):
                 from django.core.files.base import ContentFile
                 import base64
                 format, imgstr = data['image'].split(';base64,')
-                ext = format.split('/')[-1]
+                ext = _normalize_image_extension(format)
                 section.image = ContentFile(base64.b64decode(imgstr), name=f"section_{section.pk}.{ext}")
             
             section.save()
@@ -1350,7 +1520,7 @@ def _get_field(data, *keys, default=''):
 
 def _get_extension(format_str):
     """Extract and normalize extension from base64 format string."""
-    ext = format_str.split('/')[-1]
+    ext = _normalize_image_extension(format_str)
     if 'svg' in ext: return 'svg'
     return ext
 
@@ -1369,8 +1539,13 @@ def submit_startup(request):
                 full_story=_get_field(data, 'fullStory', 'full_story', default=''),
                 city=_get_field(data, 'city', default=''),
                 category=_get_field(data, 'category', default=''),
+                founded_year=_get_field(data, 'foundedYear', 'founded_year', default='') or None,
                 funding_stage=_get_field(data, 'fundingStage', 'funding_stage', default=''),
                 business_model=_get_field(data, 'businessModel', 'business_model', default=''),
+                team_size=_get_field(data, 'teamSize', 'team_size', default=''),
+                sector=_get_field(data, 'sector', default=''),
+                industry_tags=data.get('industry_tags') or data.get('industryTags') or [],
+                founders_data=data.get('founders_data') or data.get('founders') or [],
                 status='pending'
             )
             # Handle standard file uploads (multipart/form-data)
@@ -1432,6 +1607,28 @@ def media_list(request):
     } for i in items]
     return JsonResponse(data, safe=False)
 
+@csrf_exempt
+def media_upload(request):
+    if request.method == 'POST':
+        try:
+            uploaded_file = request.FILES.get('file')
+            if not uploaded_file:
+                return JsonResponse({'error': 'No file provided'}, status=400)
+            
+            # Create a new MediaItem
+            media_item = MediaItem.objects.create(
+                title=uploaded_file.name[:200], # max length 200
+                file=uploaded_file,
+                file_type=uploaded_file.content_type[:50] if uploaded_file.content_type else ''
+            )
+            
+            # The frontend expects { "url": "..." }
+            url = request.build_absolute_uri(media_item.file.url)
+            return JsonResponse({'url': url, 'id': media_item.id, 'title': media_item.title})
+        except Exception as e:
+            return JsonResponse({'error': str(e)}, status=500)
+    return JsonResponse({'error': 'Method not allowed'}, status=405)
+
 @require_GET
 def submission_list(request):
     print("DEBUG: hits submission_list")
@@ -1457,7 +1654,7 @@ def submission_list(request):
         for s in submissions_list:
             logo_url = s.logo.url if s.logo else None
             if logo_url:
-                if logo_url.startswith('http'):
+                if logo_url.startswith('http') or logo_url.startswith('/media/'):
                     pass
                 elif logo_url.startswith('/'):
                     logo_url = base_url + logo_url
@@ -1487,6 +1684,10 @@ def submission_list(request):
                 'status': s.status,
                 'logo': logo_url,
                 'thumbnail': thumbnail_url,
+                'meta_title': s.meta_title,
+                'meta_description': s.meta_description,
+                'meta_keywords': s.meta_keywords,
+                'image_alt': s.image_alt,
                 'startup_slug': startup.slug if startup else None,
                 'created_at': s.created_at.strftime("%Y-%m-%d %H:%M")
             })
@@ -1537,6 +1738,10 @@ def submission_list(request):
             'status': s.status,
             'logo': logo_url,
             'thumbnail': thumbnail_url,
+            'meta_title': s.meta_title,
+            'meta_description': s.meta_description,
+            'meta_keywords': s.meta_keywords,
+            'image_alt': s.image_alt,
             'startup_slug': startup.slug if startup else None,
             'created_at': s.created_at.strftime("%Y-%m-%d %H:%M")
         })
@@ -1576,20 +1781,30 @@ def submission_update(request, pk):
             if 'city' in data: s.city = data['city']
             if 'category' in data: s.category = data['category']
             if 'full_story' in data: s.full_story = data['full_story']
+            if 'founded_year' in data: s.founded_year = data['founded_year'] or None
             if 'funding_stage' in data: s.funding_stage = data['funding_stage']
+            if 'business_model' in data: s.business_model = data['business_model']
+            if 'team_size' in data: s.team_size = data['team_size']
+            if 'sector' in data: s.sector = data['sector']
+            if 'industry_tags' in data: s.industry_tags = data['industry_tags']
+            if 'founders_data' in data: s.founders_data = data['founders_data']
+            if 'meta_title' in data: s.meta_title = data['meta_title']
+            if 'meta_description' in data: s.meta_description = data['meta_description']
+            if 'meta_keywords' in data: s.meta_keywords = data['meta_keywords']
+            if 'image_alt' in data: s.image_alt = data['image_alt']
             
             # Handle Logo Update
             logo_data = data.get('logo')
             if logo_data and logo_data.startswith('data:image'):
                 format, imgstr = logo_data.split(';base64,')
-                ext = format.split('/')[-1]
+                ext = _normalize_image_extension(format)
                 s.logo = ContentFile(base64.b64decode(imgstr), name=f"sub_logo_{s.id}.{ext}")
             
             # Handle Thumbnail Update
             thumbnail_data = data.get('thumbnail')
             if thumbnail_data and thumbnail_data.startswith('data:image'):
                 format, imgstr = thumbnail_data.split(';base64,')
-                ext = format.split('/')[-1]
+                ext = _normalize_image_extension(format)
                 s.thumbnail = ContentFile(base64.b64decode(imgstr), name=f"sub_thumb_{s.id}.{ext}")
                 
             s.save()
@@ -1623,9 +1838,20 @@ def submission_detail(request, pk):
             'full_story': s.full_story,
             'city': s.city,
             'category': s.category,
+            'founded_year': s.founded_year,
+            'funding_stage': s.funding_stage,
+            'business_model': s.business_model,
+            'team_size': s.team_size,
+            'sector': s.sector,
+            'industry_tags': s.industry_tags or [],
+            'founders_data': s.founders_data or [],
             'status': s.status,
             'logo': logo_url,
             'thumbnail': thumbnail_url,
+            'meta_title': s.meta_title,
+            'meta_description': s.meta_description,
+            'meta_keywords': s.meta_keywords,
+            'image_alt': s.image_alt,
             'created_at': s.created_at.strftime("%Y-%m-%d %H:%M")
         })
     except StartupSubmission.DoesNotExist:
@@ -1638,6 +1864,7 @@ def update_submission_status(request, pk):
             data = json.loads(request.body)
             status = data.get('status')
             s = StartupSubmission.objects.get(pk=pk)
+            print("[update_submission_status]", {"submission_id": pk, "from": s.status, "to": status})
             
             # If approving, create a Startup entity
             if status == 'approved' and s.status != 'approved':
@@ -1646,38 +1873,88 @@ def update_submission_status(request, pk):
                 if s.category:
                     category_obj = Category.objects.filter(name__iexact=s.category).first()
                     if not category_obj:
-                        category_obj = Category.objects.create(name=s.category)
+                        base_slug = slugify(s.category)
+                        unique_slug = base_slug
+                        counter = 1
+                        while Category.objects.filter(slug=unique_slug).exists():
+                            unique_slug = f"{base_slug}-{counter}"
+                            counter += 1
+                        category_obj = Category.objects.create(name=s.category, slug=unique_slug)
 
                 # Handle City Lookup
                 city_obj = None
                 if s.city:
                     city_obj = City.objects.filter(name__iexact=s.city).first()
                     if not city_obj:
-                        city_obj = City.objects.create(name=s.city)
+                        base_slug = slugify(s.city)
+                        unique_slug = base_slug
+                        counter = 1
+                        while City.objects.filter(slug=unique_slug).exists():
+                            unique_slug = f"{base_slug}-{counter}"
+                            counter += 1
+                        city_obj = City.objects.create(name=s.city, slug=unique_slug)
 
-                # Create the Startup and keep reference
-                new_startup = Startup.objects.create(
-                    name=s.startup_name,
-                    founder_name=s.founder_name,
-                    website_url=s.website,
-                    description=s.description,
-                    city=city_obj,
-                    category=category_obj,
-                    logo=s.logo,
-                    status='published', # Auto-publish
-                    is_featured=False
-                )
+                # Create the Startup and handle slug collisions
+                base_slug = slugify(s.startup_name)
+                unique_slug = base_slug
+                counter = 1
+                while Startup.objects.filter(slug=unique_slug).exists():
+                    unique_slug = f"{base_slug}-{counter}"
+                    counter += 1
+
+                existing_startup_query = Startup.objects.filter(name__iexact=s.startup_name)
+                if s.website:
+                    existing_startup_query = Startup.objects.filter(
+                        Q(name__iexact=s.startup_name) |
+                        Q(website_url=s.website)
+                    )
+                existing_startup = existing_startup_query.first()
+
+                if existing_startup:
+                    new_startup = existing_startup
+                    print("[update_submission_status] reusing existing startup:", new_startup.slug)
+                else:
+                    new_startup = Startup.objects.create(
+                        name=s.startup_name,
+                        slug=unique_slug,
+                        founder_name=s.founder_name,
+                        website_url=s.website,
+                        description=s.full_story or s.description or f"Meet {s.startup_name}.",
+                        city=city_obj,
+                        category=category_obj,
+                        founded_year=s.founded_year,
+                        funding_stage=s.funding_stage,
+                        business_model=(s.business_model or 'other')[:30],
+                        team_size=s.team_size,
+                        founders_data=s.founders_data or [],
+                        industry_tags=s.industry_tags or ([s.sector] if s.sector else []),
+                        logo=s.logo,
+                        og_image=s.og_image,
+                        meta_title=s.meta_title or s.startup_name,
+                        meta_description=s.meta_description or s.description,
+                        meta_keywords=s.meta_keywords,
+                        image_alt=s.image_alt or s.startup_name,
+                        status='published', # Auto-publish
+                        is_featured=False
+                    )
+                    print("[update_submission_status] created startup:", new_startup.slug)
 
             s.status = status
             s.save()
             # If we created a startup, include its details in response
             if status == 'approved' and 'new_startup' in locals():
-                return JsonResponse({'message': 'Status updated', 'created_startup': {'id': new_startup.id, 'slug': new_startup.slug}})
+                return JsonResponse({
+                    'message': 'Status updated and Startup profile created', 
+                    'created_startup': {'id': new_startup.id, 'slug': new_startup.slug}
+                })
             return JsonResponse({'message': 'Status updated'})
         except StartupSubmission.DoesNotExist:
-            return JsonResponse({'error': 'Not found'}, status=404)
+            return JsonResponse({'error': 'Submission not found'}, status=404)
+        except json.JSONDecodeError:
+            return JsonResponse({'error': 'Invalid JSON in request body'}, status=400)
         except Exception as e:
-            return JsonResponse({'error': str(e)}, status=400)
+            # More descriptive error for debugging
+            return JsonResponse({'error': f"Failed to process: {str(e)}", 'type': type(e).__name__}, status=400)
     return JsonResponse({'error': 'Method not allowed'}, status=405)
 
 @csrf_exempt
@@ -1692,7 +1969,21 @@ def story_create(request):
             import re
             
             data = json.loads(request.body)
-            
+            print("[story_create] incoming payload:", data)
+
+            normalized_title = (data.get('title') or '').strip()
+            normalized_excerpt = (data.get('excerpt') or '').strip()
+            normalized_content = data.get('content')
+            if normalized_content is None:
+                normalized_content = normalized_excerpt
+            if isinstance(normalized_content, str):
+                normalized_content = normalized_content.strip()
+            else:
+                normalized_content = str(normalized_content or '').strip()
+
+            if not normalized_title:
+                return JsonResponse({'error': 'Title is required'}, status=400)
+
             # Handle Category Lookup/Create
             category_obj = None
             if data.get('category'):
@@ -1714,7 +2005,7 @@ def story_create(request):
                     )
 
             # Generate unique slug
-            base_slug = data.get('slug') or slugify(data.get('title'))
+            base_slug = data.get('slug') or slugify(normalized_title)
             unique_slug = base_slug
             counter = 1
             
@@ -1735,9 +2026,10 @@ def story_create(request):
 
             # Create the Story
             story = Story.objects.create(
-                title=data.get('title'),
+                title=normalized_title,
                 slug=unique_slug,
-                content=data.get('content', ''),
+                excerpt=normalized_excerpt,
+                content=normalized_content,
                 category=category_obj,
                 city=city_obj,
                 related_startup=related_startup,
@@ -1755,6 +2047,12 @@ def story_create(request):
                 status=data.get('status', 'draft'),
                 published_at=timezone.now() if data.get('status') == 'published' else None
             )
+            print("[story_create] created story:", {
+                "id": story.id,
+                "slug": story.slug,
+                "content_length": len(normalized_content or ""),
+                "status": story.status,
+            })
 
             # Handle thumbnail (base64 or URL). If no thumbnail provided and we have a related startup,
             # copy the startup logo into the story thumbnail.
@@ -1763,7 +2061,7 @@ def story_create(request):
                 if thumbnail_data.startswith('data:image'):
                     # Base64 image
                     format, imgstr = thumbnail_data.split(';base64,')
-                    ext = format.split('/')[-1]
+                    ext = _normalize_image_extension(format)
                     image_data = ContentFile(base64.b64decode(imgstr), name=f'{story.slug}.{ext}')
                     story.thumbnail = image_data
                     story.save()
@@ -1778,6 +2076,26 @@ def story_create(request):
                         story.save()
                 except Exception:
                     # don't fail story creation for thumbnail copy errors
+                    pass
+
+            # Handle og_image (base64)
+            og_data = data.get('og_image', '')
+            if og_data:
+                if og_data.startswith('data:image'):
+                    try:
+                        format, imgstr = og_data.split(';base64,')
+                        ext = _normalize_image_extension(format)
+                        story.og_image = ContentFile(base64.b64decode(imgstr), name=f'{story.slug}-og.{ext}')
+                        story.save()
+                    except Exception as e:
+                        print(f"Error saving story OG image: {e}")
+                elif og_data.startswith('http') or og_data.startswith('/media/'):
+                    pass
+            elif related_startup and hasattr(related_startup, 'og_image') and related_startup.og_image:
+                try:
+                    story.og_image = related_startup.og_image
+                    story.save()
+                except Exception:
                     pass
 
             return JsonResponse({
@@ -1901,9 +2219,25 @@ def story_update(request, story_id):
             if thumbnail_data:
                 if thumbnail_data.startswith('data:image'):
                     format, imgstr = thumbnail_data.split(';base64,')
-                    ext = format.split('/')[-1]
+                    ext = _normalize_image_extension(format)
                     image_data = ContentFile(base64.b64decode(imgstr), name=f'{story.slug}.{ext}')
                     story.thumbnail = image_data
+
+            # Handle og_image update (base64 or clear)
+            if 'og_image' in data:
+                og_data = data['og_image']
+                if not og_data:
+                    story.og_image = None
+                elif isinstance(og_data, str) and og_data.startswith('data:image'):
+                    try:
+                        format, imgstr = og_data.split(';base64,')
+                        ext = _normalize_image_extension(format)
+                        story.og_image = ContentFile(base64.b64decode(imgstr), name=f'{story.slug}-og.{ext}')
+                    except Exception as e:
+                        print(f"Error decoding story OG image: {e}")
+                elif isinstance(og_data, str) and (og_data.startswith('http') or og_data.startswith('/media/')):
+                    # Keep existing URL or relative path
+                    pass
 
             story.save()
             _create_redirect_if_slug_changed(old_story_slug, story.slug, 'stories')
@@ -2219,41 +2553,41 @@ def seo_settings_update(request):
 @require_POST
 def seo_apply_all(request):
     """
-    Apply global SEO settings to all existing content nodes.
+    Apply global SEO settings ONLY to content that has no existing meta fields.
+    Safe to run — will not overwrite manually crafted per-item SEO.
     Supports Story, Startup, Hub/City, Category, and Custom Pages.
     """
     try:
         settings = SEOSetting.objects.all()
         seo_map = {s.key: s.value for s in settings}
-        
-        # Mapping from SEO settings keys to model field names
+
         meta_title = seo_map.get('default_meta_title', '')
         meta_desc = seo_map.get('default_meta_description', '')
-        
+
+        if not meta_title and not meta_desc:
+            return JsonResponse({'message': 'No default SEO title or description configured. Set them in SEO Settings first.'}, status=400)
+
         with transaction.atomic():
-            # Update all primary content types with global protocols
-            Story.objects.all().update(
-                meta_title=meta_title,
-                meta_description=meta_desc
-            )
-            Startup.objects.all().update(
-                meta_title=meta_title,
-                meta_description=meta_desc
-            )
-            City.objects.all().update(
-                meta_title=meta_title,
-                meta_description=meta_desc
-            )
-            Category.objects.all().update(
-                meta_title=meta_title,
-                meta_description=meta_desc
-            )
-            Page.objects.all().update(
-                meta_title=meta_title,
-                meta_description=meta_desc
-            )
-            
-        return JsonResponse({'message': 'SEO protocols synchronized across all 5 content architectures (Stories, Startups, Hubs, Categories, Pages).'})
+            # Only fill blank fields — NEVER overwrite existing per-item SEO
+            counts = {}
+            if meta_title:
+                counts['story_titles'] = Story.objects.filter(meta_title='').update(meta_title=meta_title)
+                counts['startup_titles'] = Startup.objects.filter(meta_title='').update(meta_title=meta_title)
+                counts['city_titles'] = City.objects.filter(meta_title='').update(meta_title=meta_title)
+                counts['category_titles'] = Category.objects.filter(meta_title='').update(meta_title=meta_title)
+                counts['page_titles'] = Page.objects.filter(meta_title='').update(meta_title=meta_title)
+            if meta_desc:
+                counts['story_descs'] = Story.objects.filter(meta_description='').update(meta_description=meta_desc)
+                counts['startup_descs'] = Startup.objects.filter(meta_description='').update(meta_description=meta_desc)
+                counts['city_descs'] = City.objects.filter(meta_description='').update(meta_description=meta_desc)
+                counts['category_descs'] = Category.objects.filter(meta_description='').update(meta_description=meta_desc)
+                counts['page_descs'] = Page.objects.filter(meta_description='').update(meta_description=meta_desc)
+
+        total_filled = sum(counts.values())
+        return JsonResponse({
+            'message': f'SEO defaults applied to {total_filled} empty fields across all 5 content types. Existing SEO was preserved.',
+            'details': counts
+        })
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
 
@@ -2292,18 +2626,123 @@ def footer_list(request):
 @csrf_exempt
 def media_list(request):
     if request.method == 'GET':
-        media = MediaItem.objects.all().order_by('-created_at')
+        from .models import Startup, Story, City
         data = []
-        for m in media:
-            data.append({
-                'id': m.id,
-                'title': m.title,
-                'url': m.file.url if m.file else None,
-                'type': m.file_type,
-                'alt_text': m.alt_text,
-                'created_at': m.created_at.isoformat()
-            })
-        return JsonResponse(data, safe=False)
+        _id = 1
+        
+        # 1. Fetch MediaItems
+        for m in MediaItem.objects.all().order_by('-created_at'):
+            if m.file and m.file.name:
+                import os
+                folder = os.path.dirname(m.file.name)
+                data.append({
+                    'id': m.id,
+                    'title': m.title,
+                    'url': m.file.url,
+                    'path': m.file.name,
+                    'folder': folder.replace('\\', '/') if folder else 'media_items',
+                    'type': m.file_type,
+                    'alt_text': m.alt_text,
+                    'created_at': m.created_at.isoformat()
+                })
+        
+        # 2. Fetch Startups Logos and OM Images
+        for s in Startup.objects.all():
+            if s.logo and s.logo.name:
+                import os
+                folder = os.path.dirname(s.logo.name)
+                data.append({
+                    'id': f"startup-logo-{s.id}",
+                    'title': f"{s.name} Logo",
+                    'url': s.logo.url,
+                    'path': s.logo.name,
+                    'folder': folder.replace('\\', '/') if folder else 'startups/logos',
+                    'type': 'image',
+                    'alt_text': s.name,
+                    'created_at': s.created_at.isoformat() if s.created_at else ''
+                })
+            if s.og_image and s.og_image.name:
+                import os
+                folder = os.path.dirname(s.og_image.name)
+                data.append({
+                    'id': f"startup-og-{s.id}",
+                    'title': f"{s.name} OG Image",
+                    'url': s.og_image.url,
+                    'path': s.og_image.name,
+                    'folder': folder.replace('\\', '/') if folder else 'startups/og',
+                    'type': 'image',
+                    'alt_text': s.name,
+                    'created_at': s.created_at.isoformat() if s.created_at else ''
+                })
+                
+        # 3. Fetch Stories Thumbnails and OG
+        for st in Story.objects.all():
+            if st.thumbnail and st.thumbnail.name:
+                import os
+                folder = os.path.dirname(st.thumbnail.name)
+                data.append({
+                    'id': f"story-thumb-{st.id}",
+                    'title': f"{st.title} Thumbnail",
+                    'url': st.thumbnail.url,
+                    'path': st.thumbnail.name,
+                    'folder': folder.replace('\\', '/') if folder else 'stories/thumbnails',
+                    'type': 'image',
+                    'alt_text': st.title,
+                    'created_at': st.created_at.isoformat() if st.created_at else ''
+                })
+            if st.og_image and st.og_image.name:
+                import os
+                folder = os.path.dirname(st.og_image.name)
+                data.append({
+                    'id': f"story-og-{st.id}",
+                    'title': f"{st.title} OG Image",
+                    'url': st.og_image.url,
+                    'path': st.og_image.name,
+                    'folder': folder.replace('\\', '/') if folder else 'stories/og',
+                    'type': 'image',
+                    'alt_text': st.title,
+                    'created_at': st.created_at.isoformat() if st.created_at else ''
+                })
+                
+        # 4. Fetch Cities Images
+        for c in City.objects.all():
+            if c.image and c.image.name:
+                import os
+                folder = os.path.dirname(c.image.name)
+                data.append({
+                    'id': f"city-img-{c.id}",
+                    'title': f"{c.name} Image",
+                    'url': c.image.url,
+                    'path': c.image.name,
+                    'folder': folder.replace('\\', '/') if folder else 'cities/images',
+                    'type': 'image',
+                    'alt_text': c.name,
+                    'created_at': ''
+                })
+            if hasattr(c, 'og_image') and c.og_image and c.og_image.name:
+                import os
+                folder = os.path.dirname(c.og_image.name)
+                data.append({
+                    'id': f"city-og-{c.id}",
+                    'title': f"{c.name} OG Image",
+                    'url': c.og_image.url,
+                    'path': c.og_image.name,
+                    'folder': folder.replace('\\', '/') if folder else 'seo/og_images',
+                    'type': 'image',
+                    'alt_text': c.name,
+                    'created_at': ''
+                })
+        
+        # Deduplicate by path so we don't show the same image twice
+        seen_paths = set()
+        deduped_data = []
+        for item in data:
+            if item['path'] not in seen_paths:
+                seen_paths.add(item['path'])
+                deduped_data.append(item)
+                
+        deduped_data.sort(key=lambda x: (x['folder'], x['title']))
+        return JsonResponse(deduped_data, safe=False)
 
     if request.method == 'POST':
         try:
@@ -2517,30 +2956,46 @@ def nav_item_create(request):
     if request.method == 'POST':
         try:
             data = json.loads(request.body)
+            parent_id = data.get('parent')
+            if parent_id in ("", "null", "None", None):
+                parent_id = None
+            else:
+                parent_id = int(parent_id)
+
+            settings_data = data.get('settings', {})
+            if not isinstance(settings_data, dict):
+                settings_data = {}
+
             # Auto-calculate order if not provided or set to 0
             order = data.get('order')
-            if order is None or int(order) == 0:
-                parent_id = data.get('parent')
+            if order is None or int(order) <= 0:
                 last = NavigationItem.objects.filter(position=data['position'], parent_id=parent_id).order_by('-order').first()
                 if last:
                     order = last.order + 1
                 else:
                     order = 1
+            else:
+                order = int(order)
             
             item = NavigationItem.objects.create(
                 label=data['label'],
                 url=data.get('url', ''),
                 position=data['position'],
-                parent_id=data.get('parent'),
+                parent_id=parent_id,
                 icon=data.get('icon', ''),
                 order=order,
                 is_active=data.get('is_active', True),
-                settings=data.get('settings', {})
+                settings=settings_data
             )
             return JsonResponse({
                 'id': item.id, 
                 'label': item.label,
+                'url': item.url,
+                'parent': item.parent_id,
                 'order': item.order,
+                'position': item.position,
+                'is_active': item.is_active,
+                'settings': item.settings or {},
                 'message': 'Menu item created'
             }, status=201)
         except Exception as e:
@@ -2575,16 +3030,36 @@ def nav_item_detail(request, pk):
             if 'label' in data: item.label = data['label']
             if 'url' in data: item.url = data['url']
             if 'icon' in data: item.icon = data['icon']
-            if 'order' in data: item.order = int(data['order'])
             if 'position' in data: item.position = data['position']
-            if 'parent' in data: item.parent_id = data['parent']
+            if 'parent' in data:
+                parent_id = data['parent']
+                if parent_id in ("", "null", "None", None):
+                    item.parent_id = None
+                else:
+                    item.parent_id = int(parent_id)
+            if 'order' in data:
+                next_order = data['order']
+                if next_order in ("", None):
+                    sibling_position = data.get('position', item.position)
+                    last = NavigationItem.objects.filter(
+                        position=sibling_position,
+                        parent_id=item.parent_id
+                    ).exclude(pk=item.pk).order_by('-order').first()
+                    item.order = (last.order + 1) if last else 1
+                else:
+                    item.order = int(next_order)
             if 'is_active' in data: item.is_active = data['is_active']
-            if 'settings' in data: item.settings = data['settings']
+            if 'settings' in data:
+                item.settings = data['settings'] if isinstance(data['settings'], dict) else {}
             item.save()
             return JsonResponse({
                 'id': item.id,
                 'label': item.label,
                 'url': item.url,
+                'icon': item.icon,
+                'order': item.order,
+                'position': item.position,
+                'is_active': item.is_active,
                 'parent': item.parent_id,
                 'settings': item.settings or {}
             })
@@ -2615,6 +3090,18 @@ def startup_detail(request, slug):
     """Full detail for a startup with its related stories"""
     try:
         s = Startup.objects.select_related('category', 'city').get(slug=slug)
+        print("[startup_detail] fetched startup:", {
+            'slug': slug,
+            'id': s.id,
+            'name': s.name,
+            'description_preview': (s.description or '')[:300],
+            'category_id': s.category_id,
+            'city_id': s.city_id,
+            'funding_stage': getattr(s, 'funding_stage', ''),
+            'industry_tags': getattr(s, 'industry_tags', None) or [],
+            'is_featured': s.is_featured,
+            'status': s.status,
+        })
 
         related_stories = s.related_stories.all().order_by('-created_at')
         stories_data = [{
@@ -2632,6 +3119,7 @@ def startup_detail(request, slug):
             'name': s.name,
             'slug': s.slug,
             'description': s.description,
+            'content': s.content,
             'tagline': s.tagline or (s.description[:140] if s.description else ''),
             'logo': get_image_url(request, s.logo),
 
@@ -2684,8 +3172,15 @@ def generate_seo_view(request):
             suggestions = CitySEOGenerator(data.get('title'), data.get('description', ''))
         else:
             suggestions = generate_seo_suggestions(data)
+            
+        if suggestions and 'error' in suggestions:
+            print(f"❌ AI SEO Error: {suggestions['error']}")
+            return JsonResponse(suggestions, status=400)
+            
         return JsonResponse(suggestions)
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return JsonResponse({'error': str(e)}, status=500)
 
 
@@ -2705,8 +3200,14 @@ def generate_content_view(request):
             context = data.get('context', {})
             result = generate_ai_content(prompt_name, context)
 
+        if result and 'error' in result:
+            print(f"❌ AI Content Error: {result['error']}")
+            return JsonResponse(result, status=400)
+
         return JsonResponse(result)
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return JsonResponse({'error': str(e)}, status=500)
 
 
@@ -2736,48 +3237,335 @@ def session_login_view(request):
 
 
 @csrf_exempt
-@require_POST
 def session_logout_view(request):
     logout(request)
     return JsonResponse({"ok": True})
 
+# @csrf_exempt
+# @require_POST
+# def newsletter_subscribe(request):
+#     try:
+#         from .models import NewsletterSubscription
+#         data = json.loads(request.body)
+#         email = data.get('email', '').strip().lower()
+#         if not email:
+#             return JsonResponse({'error': 'Email is required'}, status=400)
+        
+#         # Check if already exists
+#         sub, created = NewsletterSubscription.objects.get_or_create(email=email)
+#         if not created and not sub.is_active:
+#             sub.is_active = True
+#             sub.save()
+        
+#         # --- SEND ADMIN ALERT (New Subscription) ---
+#         if created:
+#             try:
+#                 from .models import NewsletterTemplate
+#                 from django.core.mail import send_mail
+#                 from django.conf import settings
+                
+#                 # Fetch the active template or fallback
+#                 template = NewsletterTemplate.objects.filter(is_active=True).first()
+#                 if template:
+#                     subject = template.subject_format.replace('{first_story_title}', 'New Subscriber Alert')
+#                     # Admin alert specific fields
+#                     admin_intro = getattr(template, 'admin_body_intro', 'Fresh Lead')
+#                     admin_text = getattr(template, 'admin_body_text', '<p>A user has just subscribed to the newsletter:</p>')
+                    
+#                     html_content = f"""
+#                     <div style="font-family: {template.font_family}; max-width: 600px; margin: 0 auto; border: 1px solid #eee; border-radius: 8px; overflow: hidden;">
+#                         <div style="background: {template.accent_color}; height: 6px;"></div>
+#                         <div style="padding: 30px; text-align: center; border-bottom: 1px solid #eee;">
+#                             {f'<img src="{template.logo_url}" alt="Logo" style="height: 30px; margin-bottom: 15px;">' if template.logo_url else f'<h1 style="margin: 0; color: #111;">StartupSaga</h1>'}
+#                             <h2 style="margin: 10px 0 0 0; color: #111;">Admin Alert: New Subscriber</h2>
+#                         </div>
+#                         <div style="padding: 30px; text-align: center;">
+#                             <span style="display: inline-block; padding: 6px 16px; border-radius: 20px; background: {template.accent_color}15; color: {template.accent_color}; font-size: 12px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px;">
+#                                 {admin_intro}
+#                             </span>
+#                             <div style="margin: 20px 0; color: #555; line-height: 1.6;">
+#                                 {admin_text}
+#                             </div>
+#                             <div style="font-size: 20px; font-weight: bold; color: #111; padding: 15px 0; border-top: 1px solid #eee; border-bottom: 1px solid #eee; margin: 20px 0;">
+#                                 {email}
+#                             </div>
+#                         </div>
+#                         <div style="padding: 20px; text-align: center; background: #f9f9f9; color: #888; font-size: 11px;">
+#                             © 2026 StartupSaga Administrative System<br>
+#                             Confidential Notification • Internal Use Only
+#                         </div>
+#                     </div>
+#                     """
+#                 else:
+#                     # Generic fallback if no template exists
+#                     subject = "StartupSaga: New Subscriber Alert"
+#                     html_content = f"""
+#                     <h2>New Subscriber</h2>
+#                     <p>A new user has subscribed to the newsletter:</p>
+#                     <p><strong>{email}</strong></p>
+#                     """
+
+#                 # Send the email to the admin
+#                 # In production, this might be settings.ADMIN_EMAIL, but for now we'll 
+#                 # send it to a designated admin email or fallback to the EMAIL_HOST_USER
+#                 admin_email = getattr(settings, 'DEFAULT_FROM_EMAIL', 'admin@startupsaga.com') # Replace with actual admin email config if available
+                
+#                 send_mail(
+#                     subject=subject,
+#                     message=f"New subscriber: {email}", # Plain text fallback
+#                     from_email=settings.DEFAULT_FROM_EMAIL,
+#                     recipient_list=[admin_email], # Sending to admin
+#                     html_message=html_content,    # Using html_message for Django > 4.x
+#                     fail_silently=True,           # Don't throw errors that break the user experience
+#                 )
+#             except Exception as mail_err:
+#                 print(f"DEBUG: Failed to send admin alert email: {mail_err}")
+#                 import traceback
+#                 traceback.print_exc()
+
+#         return JsonResponse({'message': 'Success', 'created': created}, status=201)
+#     except Exception as e:
+#         return JsonResponse({'error': str(e)}, status=400)
+
 @csrf_exempt
 @require_POST
 def newsletter_subscribe(request):
+    from django.core.validators import validate_email
+    from django.core.exceptions import ValidationError
+    from django.core.mail import send_mail
     try:
-        from .models import NewsletterSubscription
-        data = json.loads(request.body)
+        # -------- Parse JSON safely --------
+        try:
+            data = json.loads(request.body)
+        except json.JSONDecodeError:
+            return JsonResponse({'error': 'Invalid JSON'}, status=400)
+
         email = data.get('email', '').strip().lower()
+
         if not email:
             return JsonResponse({'error': 'Email is required'}, status=400)
-        
-        # Check if already exists
+
+        # -------- Validate email format --------
+        try:
+            validate_email(email)
+        except ValidationError:
+            return JsonResponse({'error': 'Invalid email format'}, status=400)
+
+        # -------- Create or Reactivate Subscription --------
         sub, created = NewsletterSubscription.objects.get_or_create(email=email)
+        print(sub)
+
         if not created and not sub.is_active:
             sub.is_active = True
             sub.save()
-        
-        return JsonResponse({'message': 'Success', 'created': created}, status=201)
+            reactivated = True
+        else:
+            reactivated = False
+
+        # -------- Send Admin Alert (for new or reactivated users) --------
+        if created or reactivated:
+            try:
+                template = NewsletterTemplate.objects.filter(is_active=True).first()
+
+                if template:
+                    subject = template.subject_format.replace(
+                        '{first_story_title}', 
+                        'New Subscriber Alert'
+                    )
+
+                    admin_intro = getattr(
+                        template, 
+                        'admin_body_intro', 
+                        'Fresh Lead'
+                    )
+
+                    admin_text = getattr(
+                        template, 
+                        'admin_body_text', 
+                        '<p>A user has just subscribed to the newsletter:</p>'
+                    )
+
+                    logo_src = request.build_absolute_uri(template.logo_url) if template.logo_url else ''
+                    if 'media/media/' in logo_src:
+                        logo_src = logo_src.replace('media/media/', 'media/')
+                    logo_tag = f'<img src="{logo_src}" alt="Logo" style="height: 30px; margin-bottom: 15px;">' if logo_src else '<h1 style="margin: 0; color: #111;">StartupSaga</h1>'
+                    html_content = f"""
+                    <div style="font-family: {template.font_family}; max-width: 600px; margin: 0 auto; border: 1px solid #eee; border-radius: 8px; overflow: hidden;">
+                        <div style="background: {template.accent_color}; height: 6px;"></div>
+                        <div style="padding: 30px; text-align: center; border-bottom: 1px solid #eee;">
+                            {logo_tag}
+                            <h2 style="margin: 10px 0 0 0; color: #111;">Admin Alert: New Subscriber</h2>
+                        </div>
+                        <div style="padding: 30px; text-align: center;">
+                            <span style="display: inline-block; padding: 6px 16px; border-radius: 20px; background: {template.accent_color}15; color: {template.accent_color}; font-size: 12px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px;">
+                                {admin_intro}
+                            </span>
+                            <div style="margin: 20px 0; color: #555; line-height: 1.6;">
+                                {admin_text}
+                            </div>
+                            <div style="font-size: 20px; font-weight: bold; color: #111; padding: 15px 0; border-top: 1px solid #eee; border-bottom: 1px solid #eee; margin: 20px 0;">
+                                {email}
+                            </div>
+                        </div>
+                        <div style="padding: 20px; text-align: center; background: #f9f9f9; color: #888; font-size: 11px;">
+                            © 2026 StartupSaga Administrative System<br>
+                            Confidential Notification • Internal Use Only
+                        </div>
+                    </div>
+                    """
+                else:
+                    subject = "StartupSaga: New Subscriber Alert"
+                    html_content = f"""
+                    <h2>New Subscriber</h2>
+                    <p>A new user has subscribed to the newsletter:</p>
+                    <p><strong>{email}</strong></p>
+                    """
+
+                # Proper admin email (must define in settings.py)
+                admin_email = getattr(settings, 'ADMIN_EMAIL', ["sandeshkencugundi01@gmail.com"])
+
+                if admin_email:
+                    send_mail(
+                        subject=subject,
+                        message=f"New subscriber: {email}",
+                        from_email=settings.DEFAULT_FROM_EMAIL,
+                        recipient_list=[admin_email],
+                        html_message=html_content,
+                        fail_silently=True,
+                    )
+
+            except Exception as mail_err:
+                print(f"Email sending failed: {mail_err}")
+
+        # -------- Proper Response Codes --------
+        if created:
+            return JsonResponse({'message': 'Subscribed successfully'}, status=201)
+        elif reactivated:
+            return JsonResponse({'message': 'Subscription reactivated'}, status=200)
+        else:
+            return JsonResponse({'message': 'Already subscribed'}, status=200)
+
     except Exception as e:
-        return JsonResponse({'error': str(e)}, status=400)
+        import traceback
+        traceback.print_exc()
+        return JsonResponse({'error': f'Something went wrong: {str(e)}'}, status=500)
 
 @require_GET
 def newsletter_list(request):
-    from .models import NewsletterSubscription
     subs = NewsletterSubscription.objects.all().order_by('-created_at')
     data = [{
         'id': s.id,
         'email': s.email,
         'is_active': s.is_active,
+        'is_blocked': s.is_blocked,
         'created_at': s.created_at.strftime("%Y-%m-%d %H:%M")
     } for s in subs]
     return JsonResponse(data, safe=False)
+
+# @csrf_exempt
+# @require_POST
+# def newsletter_delete(request, pk):
+#     try:
+#         sub = NewsletterSubscription.objects.get(pk=pk)
+#         sub.delete()
+#         return JsonResponse({'message': 'Deleted successfully'})
+#     except NewsletterSubscription.DoesNotExist:
+#         return JsonResponse({'error': 'Not found'}, status=404)
+#     except Exception as e:
+#         return JsonResponse({'error': str(e)}, status=400)
+
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def newsletter_delete(request, pk):
+    try:
+        sub = NewsletterSubscription.objects.get(pk=pk)
+        print(sub)
+        sub.delete()
+        return JsonResponse({'message': 'Deleted successfully'}, status=200)
+    except NewsletterSubscription.DoesNotExist:
+        return JsonResponse({'error': 'Not found'}, status=404)
+    except Exception:
+        return JsonResponse({'error': 'Something went wrong'}, status=500)
+
+
+@csrf_exempt
+@require_POST
+def newsletter_toggle_block(request, pk):
+    try:
+        sub = NewsletterSubscription.objects.get(pk=pk)
+        sub.is_blocked = not sub.is_blocked
+        sub.save()
+        return JsonResponse({'is_blocked': sub.is_blocked})
+    except NewsletterSubscription.DoesNotExist:
+        return JsonResponse({'error': 'Not found'}, status=404)
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=400)
+
+@csrf_exempt
+@require_http_methods(["GET", "POST"])
+def newsletter_test_admin_alert(request):
+    try:
+        from django.core.mail import send_mail
+        from django.template.loader import render_to_string
+        
+        template = NewsletterTemplate.objects.filter(is_active=True).first()
+        if not template:
+            template = NewsletterTemplate.objects.create(name="Default Template")
+            
+        subject = f"{template.header_title}: Test Admin Alert"
+        
+        logo_src = request.build_absolute_uri(template.logo_url) if template.logo_url else ''
+        if 'media/media/' in logo_src:
+            logo_src = logo_src.replace('media/media/', 'media/')
+        logo_tag = f'<img src="{logo_src}" alt="Logo" style="max-height: 40px;">' if logo_src else f'<h1 style="color: {template.accent_color}; margin: 0;">{template.header_title}</h1>'
+
+        # We'll use the template's actual content to show how dynamic it is
+        html_content = f"""
+        <div style="font-family: {template.font_family}; max-width: 600px; margin: 0 auto; border-top: 6px solid {template.accent_color}; padding: 20px; background-color: #ffffff;">
+            <div style="margin-bottom: 20px; text-align: center;">
+                {logo_tag}
+            </div>
+            
+            <h2 style="color: #111; border-bottom: 1px solid #eee; padding-bottom: 10px;">Admin Alert: Setup Confirmed</h2>
+            
+            <div style="color: #444; line-height: 1.6; margin: 20px 0;">
+                <p><strong>Test Message:</strong></p>
+                <div style="background: #fdfdfd; padding: 15px; border-left: 4px solid {template.accent_color}; font-style: italic;">
+                    {template.admin_body_text if template.admin_body_text else "This is a test notification from your dashboard."}
+                </div>
+            </div>
+
+            <div style="background: #f9f9f9; padding: 15px; border-radius: 8px; margin: 20px 0; font-size: 13px; color: #666;">
+                <p style="margin: 5px 0;"><strong>Active Template:</strong> {template.name}</p>
+                <p style="margin: 5px 0;"><strong>Status:</strong> System Online</p>
+                <p style="margin: 5px 0;"><strong>SMTP User:</strong> {settings.EMAIL_HOST_USER}</p>
+            </div>
+            
+            <p style="font-size: 11px; color: #999; border-top: 1px solid #eee; padding-top: 15px; text-align: center;">
+                {template.footer_text.replace('{year}', str(timezone.now().year))}
+            </p>
+        </div>
+        """
+        
+        send_mail(
+            subject,
+            "Test admin alert notification.",
+            settings.DEFAULT_FROM_EMAIL,
+            [settings.EMAIL_HOST_USER],
+            html_message=html_content,
+            fail_silently=False,
+        )
+        
+        return JsonResponse({'message': 'Test email sent successfully'})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JsonResponse({'error': f"Failed to send test email: {str(e)}"}, status=500)
 
 @csrf_exempt
 def newsletter_unsubscribe(request):
     if request.method in ['POST', 'GET']:
         try:
-            from .models import NewsletterSubscription
             # Handle both GET (from email link) and POST (from UI)
             if request.method == 'GET':
                 email = request.GET.get('email')
@@ -2803,8 +3591,8 @@ def newsletter_unsubscribe(request):
 
 @require_GET
 def newsletter_template_list(request):
-    from .models import NewsletterTemplate
     templates = NewsletterTemplate.objects.all().order_by('-updated_at')
+    print(templates)
     data = []
     for t in templates:
         data.append({
@@ -2816,6 +3604,9 @@ def newsletter_template_list(request):
             'header_title': t.header_title,
             'header_subtitle': t.header_subtitle,
             'body_intro': t.body_intro,
+            'body_text': t.body_text,
+            'admin_body_intro': t.admin_body_intro,
+            'admin_body_text': t.admin_body_text,
             'footer_text': t.footer_text,
             'accent_color': t.accent_color,
             'is_active': t.is_active,
@@ -2825,39 +3616,56 @@ def newsletter_template_list(request):
 
 @csrf_exempt
 def newsletter_template_update(request, pk=None):
-    from .models import NewsletterTemplate
     if request.method in ['POST', 'PUT', 'PATCH']:
         try:
             data = json.loads(request.body)
+            print(f"DEBUG: Newsletter template update started for PK={pk}. Data: {data}")
+            
             if pk:
                 template = NewsletterTemplate.objects.get(pk=pk)
             else:
                 template = NewsletterTemplate.objects.create(name=data.get('name', 'Newsletter Template'))
 
+            # Basic identity
             if 'name' in data: template.name = data['name']
+            
+            # Content & Format
             if 'subject_format' in data: template.subject_format = data['subject_format']
-            if 'logo_url' in data: template.logo_url = data['logo_url']
+            if 'logo_url' in data: 
+                logo_val = data['logo_url']
+                if logo_val and 'media/media/' in logo_val:
+                    logo_val = logo_val.replace('media/media/', 'media/')
+                # Convert empty string to None for the URLField
+                template.logo_url = logo_val if logo_val != "" else None
+            
             if 'font_family' in data: template.font_family = data['font_family']
             if 'header_title' in data: template.header_title = data['header_title']
             if 'header_subtitle' in data: template.header_subtitle = data['header_subtitle']
             if 'body_intro' in data: template.body_intro = data['body_intro']
+            if 'body_text' in data: template.body_text = data['body_text']
+            if 'admin_body_intro' in data: template.admin_body_intro = data['admin_body_intro']
+            if 'admin_body_text' in data: template.admin_body_text = data['admin_body_text']
             if 'footer_text' in data: template.footer_text = data['footer_text']
             if 'accent_color' in data: template.accent_color = data['accent_color']
+            
             if 'is_active' in data:
                 template.is_active = data['is_active']
                 if template.is_active:
-                    # Deactivate others if this is active
+                    # Ensure only one template is active globally
                     NewsletterTemplate.objects.exclude(pk=template.pk).update(is_active=False)
 
             template.save()
+            print(f"DEBUG: Newsletter template PK={template.pk} saved successfully.")
             return JsonResponse({'message': 'Template updated', 'id': template.id})
         except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print(f"DEBUG: Error saving newsletter template: {str(e)}")
             return JsonResponse({'error': str(e)}, status=400)
     return JsonResponse({'error': 'Method not allowed'}, status=405)
 
 @require_GET
 def newsletter_template_detail(request, pk):
-    from .models import NewsletterTemplate
     try:
         t = NewsletterTemplate.objects.get(pk=pk)
         return JsonResponse({
@@ -2869,12 +3677,28 @@ def newsletter_template_detail(request, pk):
             'header_title': t.header_title,
             'header_subtitle': t.header_subtitle,
             'body_intro': t.body_intro,
+            'body_text': t.body_text,
+            'admin_body_intro': t.admin_body_intro,
+            'admin_body_text': t.admin_body_text,
             'footer_text': t.footer_text,
             'accent_color': t.accent_color,
             'is_active': t.is_active,
         })
     except NewsletterTemplate.DoesNotExist:
         return JsonResponse({'error': 'Not found'}, status=404)
+
+@csrf_exempt
+def newsletter_template_delete(request, pk):
+    if request.method == 'DELETE':
+        try:
+            t = NewsletterTemplate.objects.get(pk=pk)
+            if t.is_active:
+                return JsonResponse({'error': 'Cannot delete active template'}, status=400)
+            t.delete()
+            return JsonResponse({'message': 'Template deleted'})
+        except NewsletterTemplate.DoesNotExist:
+            return JsonResponse({'error': 'Not found'}, status=404)
+    return JsonResponse({'error': 'Method not allowed'}, status=405)
 
 
 # ---------------------------
@@ -2913,7 +3737,7 @@ def sitemap_view(request):
     for c in City.objects.filter(status='published').values_list('slug', flat=True):
         lines.append(f'  <url><loc>{base}/cities/{c}/</loc><changefreq>weekly</changefreq><priority>0.7</priority></url>')
     for p in Page.objects.filter(status='published').values_list('slug', flat=True):
-        lines.append(f'  <url><loc>{base}/pages/{p}/</loc><changefreq>monthly</changefreq><priority>0.6</priority></url>')
+        lines.append(f'  <url><loc>{base}/{p}/</loc><changefreq>monthly</changefreq><priority>0.6</priority></url>')
     lines.append('</urlset>')
     return HttpResponse('\n'.join(lines), content_type='application/xml')
 
